@@ -1,6 +1,6 @@
-# Talon — Hedwig Internal Sourcing Tool
+# Talon
 
-Talon is Hedwig's internal LinkedIn prospecting and outreach automation platform. It finds real people on LinkedIn, scores them against our ICP, generates personalized connection messages using Claude AI, and automates the full outreach sequence — all from one interface.
+Talon is [Hedwig's](https://hedwigmail.com) internal LinkedIn prospecting and outreach automation platform. It finds real people on LinkedIn, scores them against our ICP, generates personalized connection messages using Claude AI, and automates the full outreach sequence — all from one interface.
 
 **Built for speed. Zero manual LinkedIn browsing.**
 
