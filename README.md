@@ -1,26 +1,41 @@
-# Hedwig Outreach
+# Talon — Hedwig Internal Sourcing Tool
 
-Internal AI lead prospecting tool for [Hedwig AI](https://hedwig-ai.com).
+Talon is Hedwig's internal LinkedIn prospecting and outreach automation platform. It finds real people on LinkedIn, scores them against our ICP, generates personalized connection messages using Claude AI, and automates the full outreach sequence — all from one interface.
+
+**Built for speed. Zero manual LinkedIn browsing.**
+
+---
+
+## What it does
+
+1. **Prospect** — Describe who you're looking for in plain English. Talon searches real LinkedIn profiles via the Voyager API and returns scored, ranked results in seconds.
+2. **Score** — Every lead is automatically scored 1–10 against Hedwig's ICP rubric using Claude. You see exactly why each person scored the way they did.
+3. **Generate** — Claude writes personalized LinkedIn connection notes (≤300 chars) and follow-up messages tailored to each person's role, company, and background.
+4. **Automate** — Run a sequence and Talon sends connection requests + messages automatically, with human-paced delays to stay under LinkedIn's radar.
+
+---
 
 ## Stack
 
-- **Frontend**: Next.js 14 (App Router), Tailwind CSS, TypeScript
-- **Backend**: Python FastAPI, SQLAlchemy async, asyncpg
-- **Database**: PostgreSQL
-- **AI**: Anthropic Claude (`claude-sonnet-4-20250514`) — lead scoring + email generation
-- **Scraping**: Playwright (Google + company sites)
-- **Email enrichment**: Hunter.io API
-- **Email sending**: Resend API
+| Layer | Technology |
+|-------|-----------|
+| Frontend | Next.js 14 (App Router), TypeScript, inline styles |
+| Backend | Python FastAPI, SQLAlchemy async, asyncpg |
+| Database | PostgreSQL |
+| AI | Anthropic Claude `claude-sonnet-4-20250514` — scoring + message generation |
+| LinkedIn | Voyager API (internal LinkedIn API) — real profile search + automation |
 
 ---
 
 ## Setup
 
-### 1. Clone & configure
+### 1. Clone and configure
 
 ```bash
+git clone https://github.com/NeilChandran/talon.git
+cd talon
 cp .env.example .env
-# Fill in ANTHROPIC_API_KEY, HUNTER_API_KEY, RESEND_API_KEY
+# Add your ANTHROPIC_API_KEY and DATABASE_URL to .env
 ```
 
 ### 2. Start PostgreSQL
@@ -35,7 +50,6 @@ docker-compose up postgres -d
 cd backend
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-playwright install chromium
 python init_db.py          # creates tables + seeds default sequences
 uvicorn main:app --reload  # runs on :8000
 ```
@@ -48,57 +62,58 @@ npm install
 npm run dev                # runs on :3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:3000](http://localhost:3000)
 
 ---
 
 ## Pages
 
-| Route | Feature |
-|-------|---------|
-| `/` | Dashboard — stats + recent leads feed |
-| `/prospecting` | AI-powered lead discovery — describe a target, Claude finds + scores leads |
-| `/leads` | Full sortable/filterable lead table with inline status editing |
-| `/outreach` | Select leads + sequence → Claude writes personalized emails → copy or send |
-| `/sequences` | Manage email sequences (Cold Intro / Follow-up / Break-up) |
+| Route | What it does |
+|-------|-------------|
+| `/` | Dashboard — new prospects waiting for outreach |
+| `/prospecting` | Search LinkedIn by plain-English description |
+| `/leads` | Full lead table — filter, sort, bulk-select, update status |
+| `/outreach` | Generate Claude-personalized LinkedIn messages per lead |
+| `/sequences` | Create and run automated connection + message sequences |
+| `/settings` | Connect LinkedIn account (paste `li_at` cookie — one field) |
 
 ---
 
-## How prospecting works
+## LinkedIn connection
 
-1. You describe a target (e.g. _"YC W24 founders building B2B SaaS with 5-20 employees"_)
-2. Claude parses it into 5 targeted Google search queries
-3. Playwright scrapes results, extracting names, titles, companies, LinkedIn URLs
-4. Claude scores each lead 1–10 against Hedwig's ICP rubric
-5. Hunter.io finds professional email addresses
-6. Leads are saved to the database and appear in the Leads table
+Talon authenticates with LinkedIn using your session cookie — no OAuth, no official API needed.
 
-**Note**: Web scraping is inherently fragile. LinkedIn actively blocks scrapers — results come primarily from Google snippets and company websites. Expect ~5-25 leads per prospecting run depending on the query.
+1. Go to **Settings** in the app
+2. Open LinkedIn in Chrome → DevTools → Application → Cookies
+3. Copy the value of `li_at`
+4. Paste it into Talon — done
+
+JSESSIONID is derived automatically. The session is stored permanently until you disconnect.
 
 ---
 
-## Lead scoring rubric
+## ICP scoring rubric
 
 | Score | Profile |
 |-------|---------|
-| **10** | Founder/CEO at 1–20 person YC/VC startup, Gmail/Superhuman user |
-| **7–9** | CoS / Ops Lead / VP Ops at startup, productivity-focused |
-| **4–6** | Knowledge worker at mid-size company, Notion/Linear/Slack user |
-| **1–3** | Enterprise, non-email-heavy role, Outlook/Microsoft stack |
+| **10** | Founder / CEO at 1–20 person YC or VC-backed startup |
+| **7–9** | Chief of Staff / Ops Lead / VP Ops at a fast-moving startup |
+| **4–6** | Knowledge worker, uses Notion / Linear / Slack |
+| **1–3** | Enterprise role, non-decision-maker, Outlook stack |
 
 ---
 
-## Email sequences
+## Sequences
 
-Three defaults are seeded on `init_db.py`:
+Three defaults are seeded on first run:
 
-| Sequence | Subject | Delay |
-|----------|---------|-------|
-| Cold Intro | "your inbox, but smarter" | Day 0 |
-| Follow-up | "Re: your inbox" | Day 3 |
-| Break-up | "okay, last one" | Day 7 |
+| Sequence | Type | Timing |
+|----------|------|--------|
+| Connect + Intro | Connection request + note | Day 0 |
+| Follow-up | Direct message after connecting | Day 3 |
+| Final Message | Short, leaves the door open | Day 7 |
 
-Claude personalizes every email based on the lead's role, company, tech stack, and score reason.
+All messages are AI-generated per lead unless you provide a custom template with `{{first_name}}` and `{{company}}` placeholders.
 
 ---
 
@@ -106,8 +121,13 @@ Claude personalizes every email based on the lead's role, company, tech stack, a
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | ✅ | Claude API key |
-| `HUNTER_API_KEY` | Optional | Hunter.io for email enrichment |
-| `RESEND_API_KEY` | Optional | Resend for sending emails |
-| `FROM_EMAIL` | Optional | Sender address (default: outreach@hedwig-ai.com) |
+| `ANTHROPIC_API_KEY` | ✅ | Claude API — scoring and message generation |
 | `DATABASE_URL` | ✅ | PostgreSQL connection string |
+
+---
+
+## Important
+
+- LinkedIn limits connection requests to ~100/week. Talon adds 4–10 second random delays between actions.
+- Never commit `.env` or `.linkedin_session.json` — both are in `.gitignore`.
+- This tool is for internal Hedwig use only.
