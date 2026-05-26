@@ -1,0 +1,202 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300..900;1,14..32,300..900&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  background: #f7f7f8;
+  color: #0a0a0a;
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection { background: rgba(217,4,41,0.1); color: #0a0a0a; }
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #d0d0d4; border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: #a0a0a4; }
+
+*:focus-visible { outline: 2px solid #D90429; outline-offset: 2px; border-radius: 3px; }
+
+/* ── App shell ─────────────────────────────────────────────────────────────── */
+.app-shell { display: flex; min-height: 100vh; background: #f7f7f8; }
+
+.page-frame {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: #ffffff;
+  border-left: 1px solid #e8e8ea;
+}
+
+/* ── Page header ────────────────────────────────────────────────────────────── */
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 32px 36px 0;
+  background: #ffffff;
+  margin-bottom: 24px;
+}
+
+.page-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #0a0a0a;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+}
+
+.page-subtitle {
+  font-size: 0.8125rem;
+  color: #6b6b70;
+  margin-top: 3px;
+  font-weight: 400;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: #D90429;
+  color: #ffffff;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  border-radius: 7px;
+  border: none;
+  cursor: pointer;
+  transition: background 0.12s;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.btn-primary:hover { background: #b8031f; }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  background: #ffffff;
+  color: #0a0a0a;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  border-radius: 7px;
+  border: 1.5px solid #d8d8dc;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.btn-secondary:hover { background: #f5f5f7; border-color: #b0b0b4; }
+
+/* ── Cards ───────────────────────────────────────────────────────────────── */
+.card {
+  background: #ffffff;
+  border: 1px solid #e8e8ea;
+  border-radius: 10px;
+}
+
+/* ── Inputs ──────────────────────────────────────────────────────────────── */
+.input {
+  width: 100%;
+  padding: 9px 13px;
+  background: #ffffff;
+  border: 1.5px solid #d8d8dc;
+  border-radius: 7px;
+  font-size: 0.875rem;
+  color: #0a0a0a;
+  font-family: inherit;
+  transition: border-color 0.12s;
+  outline: none;
+}
+.input:focus { border-color: #D90429; }
+.input::placeholder { color: #b0b0b4; }
+
+/* ── Label ───────────────────────────────────────────────────────────────── */
+.label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #3a3a3c;
+  margin-bottom: 6px;
+}
+
+/* ── Stat card ───────────────────────────────────────────────────────────── */
+.stat-card { background: #ffffff; border: 1px solid #e8e8ea; border-radius: 10px; padding: 20px 24px; }
+.stat-label { font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: #8a8a8e; margin-bottom: 8px; }
+.stat-value { font-size: 2rem; font-weight: 700; color: #0a0a0a; letter-spacing: -0.04em; line-height: 1; }
+.stat-value.accent { color: #D90429; }
+
+/* ── Table ───────────────────────────────────────────────────────────────── */
+.talon-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+.talon-table thead th {
+  padding: 10px 16px;
+  text-align: left;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #8a8a8e;
+  background: #f7f7f8;
+  border-bottom: 1px solid #e8e8ea;
+  white-space: nowrap;
+}
+.talon-table tbody tr { border-bottom: 1px solid #f0f0f2; transition: background 0.08s; }
+.talon-table tbody tr:hover { background: #fdf5f6; }
+.talon-table tbody tr:last-child { border-bottom: none; }
+.talon-table tbody td { padding: 12px 16px; color: #1a1a1e; vertical-align: middle; }
+
+/* ── Status badges ───────────────────────────────────────────────────────── */
+.status-new       { background: #eff6ff; color: #1b6fd8; border: 1px solid #bfdbfe; }
+.status-contacted { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+.status-replied   { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+.status-closed    { background: #f9fafb; color: #4b5563; border: 1px solid #e5e7eb; }
+
+/* ── Score badges ────────────────────────────────────────────────────────── */
+.score-high { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+.score-mid  { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+.score-low  { background: #fff1f2; color: #9f1239; border: 1px solid #fecdd3; }
+
+/* ── Skeleton ─────────────────────────────────────────────────────────────── */
+@keyframes shimmer {
+  0%   { background-position: -600px 0; }
+  100% { background-position: 600px 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, #f0f0f2 25%, #e8e8eb 50%, #f0f0f2 75%);
+  background-size: 600px 100%;
+  animation: shimmer 1.4s infinite;
+  border-radius: 6px;
+}
+
+/* ── Animations ──────────────────────────────────────────────────────────── */
+@keyframes fadeIn { 0% { opacity: 0; } 100% { opacity: 1; } }
+@keyframes slideUp { 0% { opacity: 0; transform: translateY(8px); } 100% { opacity: 1; transform: translateY(0); } }
+.animate-fade-in { animation: fadeIn 0.15s ease-out; }
+.animate-slide-up { animation: slideUp 0.2s ease-out; }
+
+/* ── Dark surface overrides — force everything to light ───────────────────── */
+/* These make dark tailwind classes work in light mode */
+.bg-surface-1 { background: #ffffff !important; }
+.bg-surface-2 { background: #f7f7f8 !important; }
+.bg-surface-3 { background: #f0f0f2 !important; }
+.border-surface-border { border-color: #e8e8ea !important; }
+.text-white { color: #0a0a0a !important; }
+.text-slate-200 { color: #1a1a1e !important; }
+.text-slate-300 { color: #3a3a3c !important; }
+.text-slate-400 { color: #5a5a5e !important; }
+.text-slate-500 { color: #6b6b70 !important; }
+.text-slate-600 { color: #8a8a8e !important; }
+.text-zinc-600 { color: #8a8a8e !important; }
+.placeholder-zinc-600::placeholder { color: #b0b0b4 !important; }

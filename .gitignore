@@ -1,0 +1,33 @@
+# ── Secrets & session ────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+backend/.linkedin_session.json
+
+# ── Python ────────────────────────────────────────────────────────────────────
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/**/*.pyo
+*.egg-info/
+.pytest_cache/
+
+# ── Node / Next.js ────────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.turbo/
+frontend/tsconfig.tsbuildinfo
+
+# ── Database ──────────────────────────────────────────────────────────────────
+*.db
+*.sqlite
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+/tmp/
