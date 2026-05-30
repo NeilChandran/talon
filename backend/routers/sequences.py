@@ -21,6 +21,8 @@ from services.linkedin_service import (
     send_connection_request,
     send_message,
 )
+from services.send_cap import get_remaining, increment_count, is_capped, get_status as cap_status
+from services.reply_service import check_replies_for_leads
 
 router = APIRouter()
 
@@ -34,6 +36,39 @@ automation_jobs: Dict[str, Any] = {}
 async def get_sequences(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Sequence).order_by(Sequence.delay_days))
     return result.scalars().all()
+
+
+# NOTE: /send-cap and /check-replies must come BEFORE /{sequence_id} to avoid
+# being swallowed by the UUID path parameter route.
+
+@router.get("/send-cap")
+async def get_send_cap_status_inline():
+    """Today's LinkedIn daily send cap status (inline route, before /{sequence_id})."""
+    return cap_status()
+
+
+@router.post("/check-replies")
+async def check_replies_inline(db: AsyncSession = Depends(get_db)):
+    """Check LinkedIn inbox for replies from contacted leads (inline route, before /{sequence_id})."""
+    sess = load_session()
+    if not sess:
+        raise HTTPException(
+            status_code=400,
+            detail="No LinkedIn session. Connect your account in Settings first.",
+        )
+    result = await db.execute(
+        select(Lead).where(Lead.status == "contacted").where(Lead.linkedin_member_id.isnot(None))
+    )
+    contacted_leads = list(result.scalars().all())
+    if not contacted_leads:
+        return {"checked": 0, "replied": 0, "replied_names": [], "message": "No contacted leads with LinkedIn IDs to check."}
+    return await check_replies_for_leads(
+        leads=contacted_leads,
+        li_at=sess["li_at"],
+        jsessionid=sess.get("jsessionid", "ajax:0"),
+        bcookie=sess.get("bcookie", ""),
+        bscookie=sess.get("bscookie", ""),
+    )
 
 
 @router.get("/{sequence_id}", response_model=SequenceResponse)
@@ -142,7 +177,26 @@ async def _run_automation(job_id: str, lead_ids: List[str], sequence_id: str):
         job["error"] = "No LinkedIn session — connect your account in Settings first"
         return
 
-    # No pre-validation — let individual API calls fail with specific errors if session is bad
+    # Pre-flight: verify session is still valid via Voyager API (fast, no browser)
+    job["step"] = "Verifying LinkedIn session..."
+    try:
+        import httpx
+        async with httpx.AsyncClient(
+            headers={
+                "cookie": f"li_at={sess['li_at']}; JSESSIONID=\"{sess.get('jsessionid','ajax:0')}\";",
+                "csrf-token": sess.get("jsessionid", "ajax:0").strip('"'),
+                "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+            },
+            timeout=10,
+            follow_redirects=False,
+        ) as c:
+            r = await c.get("https://www.linkedin.com/voyager/api/me")
+            if r.is_redirect or r.status_code in (401, 403):
+                job["status"] = "failed"
+                job["error"] = "LinkedIn session expired — go to Settings and sign in again"
+                return
+    except Exception:
+        pass  # Network issue — let it proceed and fail naturally
 
     async with AsyncSessionLocal() as db:
         seq_result = await db.execute(
@@ -186,6 +240,31 @@ async def _run_automation(job_id: str, lead_ids: List[str], sequence_id: str):
 
         try:
             if sequence.type == "connection_request":
+                # ── Daily send cap check ───────────────────────────────────────
+                if is_capped():
+                    remaining_leads = len(leads) - job["done"]
+                    job["status"] = "paused"
+                    job["step"] = f"Daily LinkedIn limit reached (20/day). {remaining_leads} lead(s) not sent — run again tomorrow."
+                    job["error"] = f"Daily LinkedIn connection limit reached. {job['sent']} sent today. Remaining {remaining_leads} leads were skipped — run again tomorrow."
+                    job["results"].append({
+                        "lead_id": str(lead.id),
+                        "name": lead.name,
+                        "status": "skipped",
+                        "error": "Daily cap reached",
+                    })
+                    for skip_lead in leads[leads.index(lead) + 1:]:
+                        job["results"].append({
+                            "lead_id": str(skip_lead.id),
+                            "name": skip_lead.name,
+                            "status": "skipped",
+                            "error": "Daily cap reached",
+                        })
+                    job["done"] = len(leads)
+                    return
+
+                remaining = get_remaining()
+                job["step"] = f"Sending to {lead.name}... ({remaining} sends left today)"
+
                 # ── Generate connection note ───────────────────────────────────
                 note_template = sequence.connection_note_template
                 if note_template and len(note_template) > 10:
@@ -213,6 +292,7 @@ async def _run_automation(job_id: str, lead_ids: List[str], sequence_id: str):
                         result_entry["status"] = "sent"
                         result_entry["content"] = note
                         job["sent"] += 1
+                        increment_count()  # Track in daily cap
                         await _log_outreach(str(lead.id), sequence_id, "connection_request", note, "sent")
                         await _update_lead_status(str(lead.id), "contacted")
                     else:
@@ -223,7 +303,7 @@ async def _run_automation(job_id: str, lead_ids: List[str], sequence_id: str):
                 else:
                     result_entry["status"] = "failed"
                     result_entry["content"] = note
-                    result_entry["error"] = "Could not find LinkedIn profile — profile may be private or URL is invalid"
+                    result_entry["error"] = "Could not resolve LinkedIn profile ID — profile may be deleted, private, or the URL is invalid"
                     job["failed"] += 1
 
             elif sequence.type in ("follow_up_message", "final_message"):
@@ -357,3 +437,6 @@ async def list_automation_jobs():
         {"job_id": k, **{kk: vv for kk, vv in v.items() if kk != "results"}}
         for k, v in automation_jobs.items()
     ]
+
+
+# (send-cap and check-replies are defined earlier in this file, before /{sequence_id})

@@ -88,6 +88,56 @@ export interface ProspectingJob {
   leads: Partial<Lead>[];
   total: number;
   query: string;
-  source?: "linkedin" | "ai";
+  source?: "linkedin" | "ai" | "signal";
+  mode?: string;
   error?: string;
+}
+
+export type SignalMode = "funded" | "jobs" | "competitor";
+
+// ─── Analytics ────────────────────────────────────────────────────────────────
+
+export interface FunnelStage {
+  stage: string;
+  count: number;
+  pct: number;
+}
+
+export interface FunnelData {
+  funnel: FunnelStage[];
+  total_outreach_sent: number;
+  new_this_week: number;
+  reply_rate: number;
+  contact_rate: number;
+}
+
+export interface SequenceStat {
+  sequence_id: string;
+  name: string;
+  type: string;
+  sent: number;
+  failed: number;
+  total: number;
+  success_rate: number;
+}
+
+export interface DayActivity {
+  date: string;
+  count: number;
+}
+
+export interface SendCapStatus {
+  daily_cap: number;
+  sent_today: number;
+  remaining_today: number;
+  is_capped: boolean;
+  pct_used: number;
+  date: string;
+}
+
+export interface ReplyCheckResult {
+  checked: number;
+  replied: number;
+  replied_names: string[];
+  error: string | null;
 }

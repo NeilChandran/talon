@@ -4,10 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import {
   getSequences, createSequence, updateSequence, deleteSequence,
   runSequence, getAutomationJob, getLeads, getLinkedInStatus,
-  testLinkedInSession,
+  testLinkedInSession, getSendCap, checkReplies,
 } from "@/lib/api";
 import { peek, put } from "@/lib/cache";
-import type { AutomationJob, Lead, LinkedInSession, Sequence, SequenceType } from "@/types";
+import type { AutomationJob, Lead, LinkedInSession, ReplyCheckResult, SendCapStatus, Sequence, SequenceType } from "@/types";
 
 const TYPE_META: Record<SequenceType, { label: string; color: string; bg: string; border: string; desc: string; delay: string }> = {
   connection_request: {
@@ -342,12 +342,48 @@ function TestConnectionButton() {
   );
 }
 
+// ─── Reply check button ───────────────────────────────────────────────────────
+
+function CheckRepliesButton({ onResult }: { onResult: (r: ReplyCheckResult) => void }) {
+  const [state, setState] = useState<"idle" | "checking" | "done">("idle");
+
+  const handleCheck = async () => {
+    setState("checking");
+    try {
+      const result = await checkReplies();
+      onResult(result);
+    } catch {
+      onResult({ checked: 0, replied: 0, replied_names: [], error: "Could not check replies" });
+    } finally {
+      setState("done");
+      setTimeout(() => setState("idle"), 5000);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleCheck}
+      disabled={state === "checking"}
+      style={{
+        fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: 6, whiteSpace: "nowrap",
+        background: "none", border: "1.5px solid #d8d8dc",
+        cursor: state === "checking" ? "wait" : "pointer",
+        color: state === "done" ? "#166534" : "#5a5a5e",
+      }}
+    >
+      {state === "checking" ? "Checking..." : state === "done" ? "✓ Done" : "Check Replies"}
+    </button>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function SequencesPage() {
   const [sequences, setSequences] = useState<Sequence[]>(() => peek<Sequence[]>("sequences") ?? []);
   const [leads, setLeads] = useState<Lead[]>(() => peek<Lead[]>("leads") ?? []);
   const [liSession, setLiSession] = useState<LinkedInSession | null>(() => peek<LinkedInSession>("li-session") ?? null);
+  const [sendCap, setSendCap] = useState<SendCapStatus | null>(null);
+  const [replyResult, setReplyResult] = useState<ReplyCheckResult | null>(null);
   const [loading, setLoading] = useState(!peek("sequences"));
   const [editing, setEditing] = useState<Partial<Sequence> | null>(null);
   const [showModal, setShowModal] = useState(false);
@@ -356,13 +392,15 @@ export default function SequencesPage() {
   const load = async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const [seqs, ls, sess] = await Promise.all([
+      const [seqs, ls, sess, cap] = await Promise.all([
         getSequences(), getLeads(),
         getLinkedInStatus().catch(() => ({ connected: false }) as LinkedInSession),
+        getSendCap().catch(() => null),
       ]);
       setSequences(seqs); put("sequences", seqs);
       setLeads(ls); put("leads", ls);
       setLiSession(sess); put("li-session", sess);
+      setSendCap(cap);
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
   };
@@ -411,14 +449,80 @@ export default function SequencesPage() {
         )}
 
         {liSession?.connected && (
-          <div style={{ marginBottom: 20, padding: "12px 16px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 9, display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ marginBottom: 14, padding: "12px 16px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 9, display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
             <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
               <span style={{ fontSize: 16 }}>✅</span>
               <p style={{ margin: 0, fontSize: 13, color: "#166534" }}>
                 <strong>{liSession.name}</strong> connected · {liCount} lead{liCount !== 1 ? "s" : ""} ready for automation
               </p>
             </div>
-            <TestConnectionButton />
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <CheckRepliesButton onResult={r => setReplyResult(r)} />
+              <TestConnectionButton />
+            </div>
+          </div>
+        )}
+
+        {/* Reply check result */}
+        {replyResult && (
+          <div style={{
+            marginBottom: 14, padding: "12px 16px", borderRadius: 9, display: "flex", gap: 12, alignItems: "center",
+            background: replyResult.error ? "#fff1f2" : replyResult.replied > 0 ? "#eff6ff" : "#f7f7f8",
+            border: `1px solid ${replyResult.error ? "#fecdd3" : replyResult.replied > 0 ? "#bfdbfe" : "#e8e8ea"}`,
+          }}>
+            <span style={{ fontSize: 16 }}>{replyResult.error ? "⚠️" : replyResult.replied > 0 ? "💬" : "📭"}</span>
+            <div style={{ flex: 1 }}>
+              {replyResult.error ? (
+                <p style={{ margin: 0, fontSize: 13, color: "#9f1239" }}>{replyResult.error}</p>
+              ) : replyResult.replied > 0 ? (
+                <>
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#1b6fd8" }}>
+                    {replyResult.replied} reply{replyResult.replied > 1 ? "ies" : ""} detected!
+                  </p>
+                  <p style={{ margin: "2px 0 0", fontSize: 12, color: "#3a3a3c" }}>
+                    {replyResult.replied_names.join(", ")} — marked as Replied in Leads
+                  </p>
+                </>
+              ) : (
+                <p style={{ margin: 0, fontSize: 13, color: "#3a3a3c" }}>
+                  Checked {replyResult.checked} contacted lead{replyResult.checked !== 1 ? "s" : ""} — no new replies
+                </p>
+              )}
+            </div>
+            <button onClick={() => setReplyResult(null)} style={{ background: "none", border: "none", fontSize: 16, cursor: "pointer", color: "#8a8a8e", lineHeight: 1, flexShrink: 0 }}>×</button>
+          </div>
+        )}
+
+        {/* Daily send cap banner */}
+        {sendCap && (
+          <div style={{
+            marginBottom: 20, padding: "10px 16px", borderRadius: 9,
+            display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between",
+            background: sendCap.is_capped ? "#fff1f2" : sendCap.pct_used >= 75 ? "#fffbeb" : "#f7f7f8",
+            border: `1px solid ${sendCap.is_capped ? "#fecdd3" : sendCap.pct_used >= 75 ? "#fde68a" : "#e8e8ea"}`,
+          }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ fontSize: 14 }}>{sendCap.is_capped ? "🛑" : sendCap.pct_used >= 75 ? "⚠️" : "📊"}</span>
+              <span style={{ fontSize: 12, color: sendCap.is_capped ? "#9f1239" : sendCap.pct_used >= 75 ? "#92400e" : "#3a3a3c" }}>
+                <strong>LinkedIn daily cap:</strong>{" "}
+                {sendCap.is_capped
+                  ? "Limit reached — run again tomorrow"
+                  : `${sendCap.sent_today} / ${sendCap.daily_cap} sent today · ${sendCap.remaining_today} remaining`
+                }
+              </span>
+            </div>
+            {/* Mini bar */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+              <div style={{ width: 80, height: 4, background: "#e8e8ea", borderRadius: 2, overflow: "hidden" }}>
+                <div style={{
+                  height: "100%",
+                  width: `${Math.min(100, sendCap.pct_used)}%`,
+                  background: sendCap.is_capped ? "#D90429" : sendCap.pct_used >= 75 ? "#f59e0b" : "#22c55e",
+                  borderRadius: 2,
+                }} />
+              </div>
+              <span style={{ fontSize: 11, color: "#8a8a8e", whiteSpace: "nowrap" }}>{sendCap.pct_used}%</span>
+            </div>
           </div>
         )}
 

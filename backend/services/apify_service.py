@@ -325,6 +325,135 @@ async def _enrich_profiles_apify(linkedin_urls: List[str]) -> List[Dict[str, Any
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Signal-based search helpers (funded startups, job signals, competitor pain)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Pre-built Google search queries for each signal type.
+# Each produces LinkedIn profile URLs via the Google Search Scraper.
+SIGNAL_QUERIES: Dict[str, List[str]] = {
+    "funded": [
+        # Founders/VPs at recently-funded companies are perfect Hedwig buyers
+        'site:linkedin.com/in/ "co-founder" OR "founder" "series A" OR "seed" 2025 startup',
+        'site:linkedin.com/in/ "CEO" "VP Sales" startup "raised" 2025',
+        'site:linkedin.com/in/ "founder" "just raised" OR "excited to announce" startup',
+    ],
+    "jobs": [
+        # Companies hiring SDRs / AEs → sales leadership needs better email tooling
+        'site:linkedin.com/in/ "VP Sales" OR "Head of Sales" startup "we\'re hiring" 2025',
+        'site:linkedin.com/in/ "Director of Sales" startup "SDR" OR "account executive" growing',
+        'site:linkedin.com/in/ "Head of GTM" OR "VP Revenue" startup hiring 2025',
+    ],
+    "competitor": [
+        # People who mention Superhuman, SaneBox, or Spark — already email-tool-aware buyers
+        'site:linkedin.com/in/ "Superhuman" email founder OR "VP Sales" productivity',
+        'site:linkedin.com/in/ "SaneBox" OR "Shortwave" email startup founder operator',
+        'site:linkedin.com/in/ email productivity "inbox zero" startup founder 2025',
+    ],
+}
+
+SIGNAL_LABELS: Dict[str, str] = {
+    "funded": "Recently Funded",
+    "jobs": "Hiring Sales Team",
+    "competitor": "Competitor User",
+}
+
+
+async def search_signal_leads(mode: str, count: int = 25) -> List[Dict[str, Any]]:
+    """
+    Signal-based lead discovery for Hedwig's GTM.
+
+    mode:
+      "funded"     — founders/VPs at recently-funded startups
+      "jobs"       — sales leaders at companies hiring SDRs/AEs
+      "competitor" — people who mention competitor email tools
+
+    Returns leads enriched with a "signal" field describing why they were found.
+    """
+    if not APIFY_TOKEN:
+        print(f"[apify] signal search: APIFY_API_TOKEN not set", flush=True)
+        return []
+
+    queries = SIGNAL_QUERIES.get(mode, [])
+    if not queries:
+        print(f"[apify] unknown signal mode: {mode!r}", flush=True)
+        return []
+
+    signal_label = SIGNAL_LABELS.get(mode, mode)
+    print(f"[apify] signal search mode={mode!r} label={signal_label!r} target={count}", flush=True)
+
+    # Run first two queries in parallel (each returns ~10 results)
+    per_query = max(count // len(queries[:2]), 10)
+
+    async def _run_query(q: str) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        seen: set = set()
+        items = await _run_actor(GOOGLE_ACTOR, {
+            "queries": q,
+            "maxPagesPerQuery": 2,
+            "resultsPerPage": 10,
+            "countryCode": "us",
+            "languageCode": "en",
+            "mobileResults": False,
+            "saveHtml": False,
+            "saveHtmlToKeyValueStore": False,
+        }, timeout_s=60)
+        for item in items:
+            for result in item.get("organicResults", []):
+                lead = _parse_google_snippet(result)
+                if lead and lead["linkedin_public_id"] not in seen:
+                    seen.add(lead["linkedin_public_id"])
+                    lead["signal"] = signal_label
+                    results.append(lead)
+                    if len(results) >= per_query:
+                        break
+        return results
+
+    # Run queries concurrently
+    query_batches = await asyncio.gather(*[_run_query(q) for q in queries[:2]])
+
+    # Merge, deduplicate by public_id
+    seen_ids: set = set()
+    merged: List[Dict[str, Any]] = []
+    for batch in query_batches:
+        for lead in batch:
+            pid = lead.get("linkedin_public_id", "")
+            if pid and pid not in seen_ids:
+                seen_ids.add(pid)
+                merged.append(lead)
+
+    print(f"[apify] signal search: {len(merged)} unique profiles found", flush=True)
+
+    if not merged:
+        return []
+
+    # Enrich with full profile data
+    urls = [l["linkedin_url"] for l in merged[:count] if l.get("linkedin_url")]
+    enriched_map: Dict[str, Dict] = {}
+    if urls:
+        try:
+            enriched = await _enrich_profiles_apify(urls)
+            for e in enriched:
+                pid = e.get("linkedin_public_id", "")
+                if pid:
+                    enriched_map[pid] = e
+        except Exception as e:
+            print(f"[apify] signal search enrichment error: {e}", flush=True)
+
+    results: List[Dict[str, Any]] = []
+    for lead in merged[:count]:
+        pid = lead.get("linkedin_public_id", "")
+        if pid and pid in enriched_map:
+            merged_lead = {**lead, **{k: v for k, v in enriched_map[pid].items() if v}}
+            merged_lead["signal"] = signal_label  # preserve signal after merge
+            results.append(merged_lead)
+        else:
+            results.append(lead)
+
+    print(f"[apify] signal search complete: {len(results)} enriched leads", flush=True)
+    return results[:count]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Main public function
 # ──────────────────────────────────────────────────────────────────────────────
 

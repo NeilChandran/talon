@@ -1,12 +1,18 @@
 import type {
   AutomationJob,
+  DayActivity,
+  FunnelData,
   Lead,
   LeadStatus,
   LinkedInMessage,
   LinkedInSession,
   ProspectingJob,
+  ReplyCheckResult,
+  SendCapStatus,
   Sequence,
+  SequenceStat,
   SequenceType,
+  SignalMode,
   Stats,
 } from "@/types";
 
@@ -92,6 +98,12 @@ export const startProspecting = (query: string) =>
     body: JSON.stringify({ query }),
   });
 
+export const startSignalProspecting = (mode: SignalMode) =>
+  request<{ job_id: string; status: string; mode: string }>(
+    `/prospecting/signal?mode=${mode}`,
+    { method: "POST" }
+  );
+
 export const getProspectingStatus = (jobId: string) =>
   request<ProspectingJob>(`/prospecting/status/${jobId}`);
 
@@ -142,6 +154,28 @@ export const runSequence = (sequenceId: string, leadIds: string[]) =>
 
 export const getAutomationJob = (jobId: string) =>
   request<AutomationJob>(`/sequences/jobs/${jobId}`);
+
+// ─── Reply detection ──────────────────────────────────────────────────────────
+
+export const checkReplies = () =>
+  request<ReplyCheckResult>("/sequences/check-replies", { method: "POST" });
+
+export const getSendCap = () =>
+  request<SendCapStatus>("/sequences/send-cap");
+
+// ─── Analytics ────────────────────────────────────────────────────────────────
+
+export const getAnalyticsFunnel = () =>
+  request<FunnelData>("/analytics/funnel");
+
+export const getAnalyticsSequences = () =>
+  request<SequenceStat[]>("/analytics/sequences");
+
+export const getAnalyticsDailyActivity = () =>
+  request<DayActivity[]>("/analytics/daily-activity");
+
+export const getAnalyticsSendCap = () =>
+  request<SendCapStatus>("/analytics/send-cap");
 
 // ─── Legacy email ─────────────────────────────────────────────────────────────
 

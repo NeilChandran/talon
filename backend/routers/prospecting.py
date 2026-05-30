@@ -19,7 +19,7 @@ from services.claude_service import (
     enrich_linkedin_leads,
 )
 from services.linkedin_service import load_session, search_people, clear_session
-from services.apify_service import search_people_apify, APIFY_TOKEN
+from services.apify_service import search_people_apify, search_signal_leads, SIGNAL_LABELS, APIFY_TOKEN
 
 router = APIRouter()
 
@@ -189,3 +189,119 @@ async def list_jobs():
         {"job_id": k, **{kk: vv for kk, vv in v.items() if kk != "leads"}}
         for k, v in jobs.items()
     ]
+
+
+# ─── Signal-based prospecting ─────────────────────────────────────────────────
+
+async def run_signal_job(job_id: str, mode: str):
+    """
+    Background job: find leads using a signal-based query mode.
+    Modes: "funded" | "jobs" | "competitor"
+    """
+    jobs[job_id]["status"] = "running"
+    label = SIGNAL_LABELS.get(mode, mode)
+
+    try:
+        if not APIFY_TOKEN:
+            jobs[job_id]["status"] = "failed"
+            jobs[job_id]["error"] = "APIFY_API_TOKEN not set — add it in Settings."
+            return
+
+        jobs[job_id]["step"] = f"Finding {label} leads via signal search..."
+        people = await search_signal_leads(mode, count=25)
+
+        if not people:
+            jobs[job_id]["status"] = "failed"
+            jobs[job_id]["error"] = f"No results for signal mode '{mode}'. Try again or use a custom search."
+            return
+
+        # Enrich with Claude
+        jobs[job_id]["step"] = f"Enriching {len(people)} leads..."
+        try:
+            people = await enrich_linkedin_leads(people, f"Hedwig ICP: {label}")
+        except Exception as e:
+            print(f"[signal job {job_id[:8]}] enrichment error: {e}", flush=True)
+
+        # Score each lead
+        jobs[job_id]["step"] = f"Scoring {len(people)} leads..."
+        scored = []
+        sem = asyncio.Semaphore(5)
+
+        async def score_one(person, idx):
+            async with sem:
+                jobs[job_id]["step"] = f"Scoring lead {idx + 1}/{len(people)}..."
+                try:
+                    # Pass signal context to scorer
+                    person_with_signal = {**person, "signal": person.get("signal", label)}
+                    result = await score_lead(person_with_signal)
+                    person["icp_score"] = result["score"]
+                    person["score_reason"] = result["reason"]
+                    scored.append(person)
+                    jobs[job_id]["leads"] = list(scored)
+                except Exception as e:
+                    person["icp_score"] = 5
+                    person["score_reason"] = f"Signal: {label}"
+                    scored.append(person)
+                    jobs[job_id]["leads"] = list(scored)
+
+        await asyncio.gather(*[score_one(p, i) for i, p in enumerate(people)])
+
+        # Save to DB
+        if scored:
+            async with AsyncSessionLocal() as session:
+                for lead_data in scored:
+                    from models import Lead
+                    lead = Lead(
+                        id=uuid.uuid4(),
+                        name=lead_data.get("name", ""),
+                        title=lead_data.get("title", ""),
+                        company=lead_data.get("company", ""),
+                        company_size=lead_data.get("company_size", ""),
+                        email=lead_data.get("email", ""),
+                        linkedin_url=lead_data.get("linkedin_url", ""),
+                        linkedin_profile_id=lead_data.get("linkedin_profile_id", ""),
+                        linkedin_member_id=lead_data.get("linkedin_member_id", ""),
+                        icp_score=lead_data.get("icp_score", 5),
+                        score_reason=lead_data.get("score_reason", ""),
+                        tech_stack=lead_data.get("tech_stack", []),
+                    )
+                    session.add(lead)
+                await session.commit()
+
+        jobs[job_id]["status"] = "completed"
+        jobs[job_id]["step"] = f"Done — {len(scored)} {label} leads found"
+        jobs[job_id]["total"] = len(scored)
+        jobs[job_id]["source"] = "signal"
+
+    except Exception as e:
+        jobs[job_id]["status"] = "failed"
+        jobs[job_id]["error"] = str(e)
+        print(f"[signal job {job_id}] error: {e}")
+
+
+@router.post("/signal")
+async def start_signal_search(
+    mode: str,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Start a signal-based prospecting job.
+    mode: "funded" | "jobs" | "competitor"
+    """
+    valid_modes = list(SIGNAL_LABELS.keys())
+    if mode not in valid_modes:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=f"Invalid mode. Must be one of: {valid_modes}")
+
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {
+        "status": "pending",
+        "step": "Initializing signal search...",
+        "leads": [],
+        "total": 0,
+        "query": f"Signal: {SIGNAL_LABELS[mode]}",
+        "source": "signal",
+        "mode": mode,
+    }
+    background_tasks.add_task(run_signal_job, job_id, mode)
+    return {"job_id": job_id, "status": "pending", "mode": mode}

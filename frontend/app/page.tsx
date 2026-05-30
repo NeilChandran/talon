@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getStats, getRecentLeads } from "@/lib/api";
+import { getStats, getRecentLeads, getSendCap, getAnalyticsFunnel } from "@/lib/api";
 import { peek, put, isStale } from "@/lib/cache";
-import type { Stats, Lead } from "@/types";
+import type { FunnelData, SendCapStatus, Stats, Lead } from "@/types";
 
 function StatCard({ label, value, sub, accent }: { label: string; value: string | number; sub: string; accent?: boolean }) {
   return (
@@ -63,15 +63,24 @@ function LeadRow({ lead }: { lead: Lead }) {
 export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(() => peek<Stats>("stats") ?? null);
   const [leads, setLeads] = useState<Lead[]>(() => peek<Lead[]>("home-leads") ?? []);
+  const [sendCap, setSendCap] = useState<SendCapStatus | null>(null);
+  const [funnel, setFunnel] = useState<FunnelData | null>(null);
   const [loading, setLoading] = useState(!peek("stats") || !peek("home-leads"));
 
   useEffect(() => {
     const stale = isStale("stats") || isStale("home-leads");
     if (!stale) { setLoading(false); return; }
-    Promise.all([getStats(), getRecentLeads(12)])
-      .then(([s, l]) => {
+    Promise.all([
+      getStats(),
+      getRecentLeads(12),
+      getSendCap().catch(() => null),
+      getAnalyticsFunnel().catch(() => null),
+    ])
+      .then(([s, l, cap, f]) => {
         setStats(s); put("stats", s);
         setLeads(l); put("home-leads", l);
+        setSendCap(cap);
+        setFunnel(f);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -94,18 +103,39 @@ export default function Dashboard() {
       <div style={{ padding: "0 40px 40px" }}>
 
         {/* Stats row */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 28 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 20 }}>
           {loading && !stats ? Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="skeleton" style={{ height: 90, borderRadius: 10 }} />
           )) : (
             <>
               <StatCard label="Total Leads" value={stats?.total_leads ?? 0} sub="in pipeline" />
-              <StatCard label="New This Week" value={stats?.leads_this_week ?? 0} sub="discovered" accent />
+              <StatCard label="New This Week" value={stats?.leads_this_week ?? 0} sub="prospected" accent />
               <StatCard label="Messages Sent" value={stats?.emails_sent ?? 0} sub="all sequences" />
-              <StatCard label="Reply Rate" value={`${stats?.reply_rate ?? 0}%`} sub="of delivered" accent />
+              <StatCard label="Reply Rate" value={`${funnel?.reply_rate ?? stats?.reply_rate ?? 0}%`} sub="contacted → replied" accent />
             </>
           )}
         </div>
+
+        {/* Send cap mini-bar */}
+        {sendCap && (
+          <div style={{ marginBottom: 20, padding: "10px 16px", background: sendCap.is_capped ? "#fff1f2" : "#f7f7f8", border: `1px solid ${sendCap.is_capped ? "#fecdd3" : "#e8e8ea"}`, borderRadius: 9, display: "flex", alignItems: "center", gap: 12, justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 13 }}>{sendCap.is_capped ? "🛑" : "📊"}</span>
+              <span style={{ fontSize: 12, color: sendCap.is_capped ? "#9f1239" : "#3a3a3c" }}>
+                <strong>Today's LinkedIn cap:</strong>{" "}
+                {sendCap.is_capped
+                  ? "Daily limit reached — resets at midnight UTC"
+                  : `${sendCap.sent_today} of ${sendCap.daily_cap} sent · ${sendCap.remaining_today} left`}
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ width: 100, height: 5, background: "#e8e8ea", borderRadius: 3, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${Math.min(100, sendCap.pct_used)}%`, background: sendCap.is_capped ? "#D90429" : sendCap.pct_used >= 75 ? "#f59e0b" : "#22c55e", borderRadius: 3 }} />
+              </div>
+              <Link href="/analytics" style={{ fontSize: 11, color: "#D90429", fontWeight: 600, textDecoration: "none" }}>Analytics →</Link>
+            </div>
+          </div>
+        )}
 
         {hasLeads ? (
           /* ── Leads list (real prospected leads only) ── */

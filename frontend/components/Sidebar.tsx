@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { getLeads, getSequences, getStats, getLinkedInStatus, getRecentLeads } from "@/lib/api";
+import { getLeads, getSequences, getStats, getLinkedInStatus, getRecentLeads, getAnalyticsFunnel } from "@/lib/api";
 import { put, isStale } from "@/lib/cache";
 
 // Pre-warm the cache for a given route on hover
@@ -18,9 +18,13 @@ function prefetchRoute(href: string) {
     case "/sequences":
       if (isStale("sequences")) getSequences().then(d => put("sequences", d)).catch(() => {});
       if (isStale("leads")) getLeads().then(d => put("leads", d)).catch(() => {});
+      if (isStale("li-session")) getLinkedInStatus().then(d => put("li-session", d)).catch(() => {});
       break;
     case "/outreach":
       if (isStale("leads")) getLeads().then(d => put("leads", d)).catch(() => {});
+      break;
+    case "/analytics":
+      if (isStale("analytics-funnel")) getAnalyticsFunnel().then(d => put("analytics-funnel", d)).catch(() => {});
       break;
     case "/settings":
       if (isStale("li-session")) getLinkedInStatus().then(d => put("li-session", d)).catch(() => {});
@@ -61,6 +65,11 @@ const NAV = [
         href: "/sequences",
         label: "Sequences",
         icon: <svg viewBox="0 0 20 20" fill="currentColor" width={15} height={15}><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg>,
+      },
+      {
+        href: "/analytics",
+        label: "Analytics",
+        icon: <svg viewBox="0 0 20 20" fill="currentColor" width={15} height={15}><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" /></svg>,
       },
     ],
   },

@@ -6,25 +6,34 @@ import os
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 MODEL = "claude-sonnet-4-20250514"
 
-TALON_CONTEXT = """Talon is an AI-powered LinkedIn outreach platform that finds, scores, and connects with prospects automatically.
+HEDWIG_CONTEXT = """Hedwig is an AI-powered email and calendar tool — "Email and Calendar, Supercharged."
 
-Key features:
-- AI-powered lead discovery from LinkedIn and the web
-- Automatic ICP scoring using Claude
-- AI-personalized LinkedIn connection requests and messages
-- Automated LinkedIn outreach sequences
+What it does: Makes email and calendar dramatically faster and smarter using AI. Think Superhuman
+but with real AI built in — AI that drafts replies, prioritizes your inbox, schedules meetings,
+and handles calendar management automatically.
 
-Ideal customers: B2B sales teams, founders doing outbound, growth operators at startups."""
+Who buys it: People who live in email and have calendar overload. Founders, sales leaders, and
+operators at fast-growing startups who can't afford to let email and meetings slow them down."""
 
-ICP_RUBRIC = """Lead Scoring Rubric for Talon:
+ICP_RUBRIC = """Lead Scoring Rubric for Hedwig (AI email + calendar tool):
 
-10: Founder/CEO/Co-founder at 1-20 person YC/VC-backed startup, B2B SaaS or high-growth startup
+10: Founder/CEO/Co-founder at 1-50 person VC-backed or bootstrapped startup. Lives in email,
+    drives GTM, manages a calendar full of investor/customer calls.
 
-7-9: Operator (COO, Chief of Staff, Head of Ops, VP Operations) at startup, fast-moving team
+9:  VP Sales, Head of GTM, Director of Sales at a startup with a growing sales team.
+    Sends hundreds of emails a day, manages pipeline, books lots of meetings.
 
-4-6: Knowledge worker at mid-size company (20-200 people), uses productivity tools
+7-8: Chief of Staff, Head of Operations, Revenue Operations Manager at a growth-stage startup.
+     Coordinates heavily across email + calendar.
 
-1-3: Enterprise employee, non-leadership role, or company over 500 people"""
+5-6: Individual contributor (AE, SDR, Marketing Manager) at a 20-200 person company who sends
+     high email volume daily.
+
+1-4: Enterprise employee (1000+ co), non-tech role, or someone unlikely to pay for a premium
+     email/calendar tool (student, academic, government)."""
+
+# Keep backward-compat alias
+TALON_CONTEXT = HEDWIG_CONTEXT
 
 
 async def parse_prospecting_query(query: str) -> Dict[str, Any]:
@@ -192,14 +201,14 @@ Return ONLY valid JSON array, same order as input list.""",
 
 
 async def score_lead(lead_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Score a lead 1-10 based on Talon ICP fit."""
+    """Score a lead 1-10 based on Hedwig ICP fit."""
     message = client.messages.create(
         model=MODEL,
         max_tokens=512,
         messages=[
             {
                 "role": "user",
-                "content": f"""Score this lead for Talon (LinkedIn outreach tool for B2B sales teams) based on ICP fit.
+                "content": f"""Score this lead for Hedwig (AI email + calendar tool) based on ICP fit.
 
 {ICP_RUBRIC}
 
@@ -210,10 +219,11 @@ Lead data:
 - Company size: {lead_data.get('company_size', 'Unknown')}
 - Tech stack signals: {', '.join(lead_data.get('tech_stack', []))}
 - Description: {lead_data.get('description', '')[:500]}
+- Signal: {lead_data.get('signal', '')}
 
 Return a JSON object with:
 - score: integer 1-10
-- reason: one specific sentence explaining the score
+- reason: one specific sentence explaining WHY this person would benefit from Hedwig
 
 Return ONLY valid JSON.""",
             }
@@ -232,31 +242,34 @@ Return ONLY valid JSON.""",
 
 async def generate_linkedin_connection_note(lead: Dict[str, Any]) -> str:
     """
-    Generate a personalized LinkedIn connection request note.
+    Generate a personalized LinkedIn connection request note for Hedwig outreach.
     Must be ≤300 characters.
     """
+    signal = lead.get("signal", "")
+    signal_line = f"\n- Signal context: {signal}" if signal else ""
+
     message = client.messages.create(
         model=MODEL,
         max_tokens=256,
         messages=[
             {
                 "role": "user",
-                "content": f"""Write a LinkedIn connection request note for this person.
+                "content": f"""Write a LinkedIn connection request note for this person on behalf of Hedwig.
 
-About Talon: {TALON_CONTEXT}
+About Hedwig: {HEDWIG_CONTEXT}
 
 Lead:
-- Name: {lead.get('name', 'there')} (use first name)
+- Name: {lead.get('name', 'there')} (use first name only)
 - Title: {lead.get('title', '')}
-- Company: {lead.get('company', '')}
+- Company: {lead.get('company', '')}{signal_line}
 - Why they fit: {lead.get('score_reason', '')}
 
 Rules:
-- Max 300 characters (this is a HARD limit, count carefully)
-- Sound human and specific — reference their role/company
-- Mention what Talon does in one phrase
-- No "I hope this message finds you well" clichés
-- No formal sign-off needed
+- Max 300 characters HARD LIMIT — count every character
+- Sound human and specific to their role/company
+- Reference Hedwig in one short phrase ("AI email tool", "smarter inbox", etc.)
+- No "I hope this message finds you well" or "I came across your profile"
+- No formal sign-off
 
 Return ONLY the note text, nothing else.""",
             }
@@ -269,21 +282,24 @@ Return ONLY the note text, nothing else.""",
 
 async def generate_linkedin_message(lead: Dict[str, Any], message_type: str = "follow_up_message") -> str:
     """
-    Generate a personalized LinkedIn direct message.
+    Generate a personalized LinkedIn direct message for Hedwig outreach.
     """
-    instructions = {
-        "follow_up_message": """Write a follow-up LinkedIn message (3 days after connection).
-- 3-5 sentences max
-- Reference their specific role/company pain point
-- Mention one specific Talon feature relevant to them
-- Clear CTA (offer a quick call or demo)
-- Warm, founder-to-founder tone""",
+    signal = lead.get("signal", "")
+    signal_line = f"\n- Signal context: {signal}" if signal else ""
 
-        "final_message": """Write a final LinkedIn message (7 days after connection).
+    instructions = {
+        "follow_up_message": """Write a follow-up LinkedIn message (sent 3 days after connecting).
+- 3-5 sentences max
+- Reference their specific role/company and why email + calendar pain is real for them
+- Mention one specific Hedwig benefit relevant to their situation
+- Clear CTA: offer a quick demo or ask if it's worth 10 minutes
+- Tone: warm, peer-to-peer, not salesy""",
+
+        "final_message": """Write a final LinkedIn message (sent 7 days after connecting).
 - 2-3 sentences max
-- Light touch, leave door open
-- One last compelling reason to try Talon
-- Friendly, not pushy""",
+- Light touch — leave door open without pressure
+- One last reason Hedwig is worth a look given their situation
+- Tone: friendly, no urgency""",
     }
 
     first_name = (lead.get("name", "there").split()[0]) if lead.get("name") else "there"
@@ -294,22 +310,22 @@ async def generate_linkedin_message(lead: Dict[str, Any], message_type: str = "f
         messages=[
             {
                 "role": "user",
-                "content": f"""Generate a personalized LinkedIn message from Talon.
+                "content": f"""Generate a personalized LinkedIn message on behalf of Hedwig.
 
-About Talon: {TALON_CONTEXT}
+About Hedwig: {HEDWIG_CONTEXT}
 
 Lead:
 - Name: {lead.get('name', '')} (use first name: {first_name})
 - Title: {lead.get('title', '')}
 - Company: {lead.get('company', '')}
-- Company size: {lead.get('company_size', '')}
+- Company size: {lead.get('company_size', '')}{signal_line}
 - Why they fit: {lead.get('score_reason', '')}
 
 Message type: {message_type}
 Instructions:
 {instructions.get(message_type, instructions['follow_up_message'])}
 
-Sign off as "— [Your name] at Talon". Use plain text, no markdown.
+Sign off with "— [Your first name] from Hedwig". Use plain text, no markdown.
 Return ONLY the message text.""",
             }
         ],
