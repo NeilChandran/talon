@@ -1,9 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300..900;1,14..32,300..900&display=swap");
-
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
+/* Tailwind loaded via CDN in layout.tsx */
 *, *::before, *::after { box-sizing: border-box; }
 
 html, body {
@@ -42,24 +37,25 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 32px 36px 0;
+  padding: 36px 40px 0;
   background: #ffffff;
-  margin-bottom: 24px;
+  margin-bottom: 28px;
 }
 
 .page-title {
-  font-size: 1.5rem;
-  font-weight: 700;
+  font-size: 1.75rem;
+  font-weight: 800;
   color: #0a0a0a;
-  letter-spacing: -0.025em;
-  line-height: 1.2;
+  letter-spacing: -0.04em;
+  line-height: 1.15;
 }
 
 .page-subtitle {
   font-size: 0.8125rem;
-  color: #6b6b70;
-  margin-top: 3px;
+  color: #9a9aa0;
+  margin-top: 4px;
   font-weight: 400;
+  letter-spacing: -0.01em;
 }
 
 /* ── Buttons ─────────────────────────────────────────────────────────────── */

@@ -44,40 +44,37 @@ export default function ProspectingPage() {
   return (
     <>
       <header className="page-header">
-        <div>
-          <h1 className="page-title">Prospect</h1>
-          <p className="page-subtitle">Describe who you're looking for — Talon finds real LinkedIn profiles and scores them</p>
-        </div>
+        <h1 className="page-title">Prospect</h1>
       </header>
 
-      <div style={{ padding: "0 36px 36px", maxWidth: 1100 }}>
+      <div style={{ padding: "0 40px 40px", maxWidth: 1140 }}>
         {/* Search box */}
-        <div className="card" style={{ padding: 24, marginBottom: 20 }}>
-          <label className="label">Who are you looking for?</label>
+        <div className="card" style={{ padding: "22px 24px", marginBottom: 20 }}>
           <textarea
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSearch(); }}
-            placeholder="e.g. YC W24 founders building B2B SaaS with 5-20 employees..."
+            placeholder="e.g. YC W24 founders building B2B SaaS with 5–20 employees..."
             rows={3}
             className="input"
-            style={{ resize: "none" }}
+            style={{ resize: "none", fontSize: 14 }}
           />
 
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14, flexWrap: "wrap", gap: 10 }}>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
               {EXAMPLES.map(ex => (
                 <button
                   key={ex}
                   onClick={() => setQuery(ex)}
                   style={{
-                    fontSize: 11, padding: "4px 12px", borderRadius: 20,
-                    background: "#fff", border: "1.5px solid #e0e0e2",
-                    color: "#5a5a5e", cursor: "pointer", fontWeight: 400,
+                    fontSize: 11.5, padding: "4px 11px", borderRadius: 20,
+                    background: "#fff", border: "1.5px solid #e8e8ea",
+                    color: "#6b6b70", cursor: "pointer", fontWeight: 400,
+                    letterSpacing: "-0.01em",
                     transition: "all 0.1s",
                   }}
-                  onMouseOver={e => { e.currentTarget.style.borderColor = "#D90429"; e.currentTarget.style.color = "#D90429"; }}
-                  onMouseOut={e => { e.currentTarget.style.borderColor = "#e0e0e2"; e.currentTarget.style.color = "#5a5a5e"; }}
+                  onMouseOver={e => { e.currentTarget.style.borderColor = "#0a0a0a"; e.currentTarget.style.color = "#0a0a0a"; }}
+                  onMouseOut={e => { e.currentTarget.style.borderColor = "#e8e8ea"; e.currentTarget.style.color = "#6b6b70"; }}
                 >
                   {ex}
                 </button>
@@ -96,52 +93,64 @@ export default function ProspectingPage() {
 
         {/* Progress */}
         {loading && job && (
-          <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 18px", background: "#fff", border: "1.5px solid #fecdd3", borderRadius: 9, marginBottom: 20 }}>
-            <div style={{ width: 18, height: 18, border: "2.5px solid #fecdd3", borderTopColor: "#D90429", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "13px 18px", background: "#fff", border: "1px solid #e8e8ea", borderRadius: 9, marginBottom: 20 }}>
+            <div style={{ width: 16, height: 16, border: "2.5px solid #e8e8ea", borderTopColor: "#0a0a0a", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
             <div>
-              <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: "#0a0a0a" }}>{job.step}</p>
-              {leads.length > 0 && <p style={{ margin: "2px 0 0", fontSize: 12, color: "#6b6b70" }}>{leads.length} leads found so far...</p>}
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: "#0a0a0a", letterSpacing: "-0.01em" }}>{job.step}</p>
+              {leads.length > 0 && <p style={{ margin: "2px 0 0", fontSize: 12, color: "#8a8a8e" }}>{leads.length} found so far</p>}
             </div>
           </div>
         )}
         {loading && !job && (
-          <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 18px", background: "#fff", border: "1px solid #e8e8ea", borderRadius: 9, marginBottom: 20 }}>
-            <div style={{ width: 18, height: 18, border: "2.5px solid #e0e0e2", borderTopColor: "#D90429", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
-            <p style={{ margin: 0, fontSize: 13, color: "#6b6b70" }}>Initializing search...</p>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "13px 18px", background: "#fff", border: "1px solid #e8e8ea", borderRadius: 9, marginBottom: 20 }}>
+            <div style={{ width: 16, height: 16, border: "2.5px solid #e8e8ea", borderTopColor: "#0a0a0a", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
+            <p style={{ margin: 0, fontSize: 13, color: "#8a8a8e" }}>Initializing...</p>
           </div>
         )}
+
+        {/* Error state */}
         {job?.status === "failed" && (
-          <div style={{ padding: "14px 18px", background: "#fff1f2", border: "1px solid #fecdd3", borderRadius: 9, marginBottom: 20 }}>
-            <p style={{ margin: 0, fontSize: 13, color: "#9f1239", fontWeight: 500 }}>
-              {job.error?.includes("not connected")
-                ? "LinkedIn is not connected."
-                : `Search failed: ${job.error}`}
-            </p>
-            {job.error?.includes("not connected") && (
-              <a href="/settings" style={{ fontSize: 13, color: "#9f1239", fontWeight: 600, display: "inline-block", marginTop: 6 }}>
-                Connect LinkedIn in Settings →
+          <div style={{ padding: "14px 18px", background: "#fff", border: "1px solid #e8e8ea", borderRadius: 9, marginBottom: 20, display: "flex", alignItems: "center", gap: 14 }}>
+            <div style={{ flex: 1 }}>
+              <p style={{ margin: "0 0 3px", fontSize: 13, fontWeight: 700, color: "#0a0a0a", letterSpacing: "-0.02em" }}>
+                {job.error?.includes("not connected") ? "LinkedIn not connected" : "Search failed"}
+              </p>
+              <p style={{ margin: 0, fontSize: 12, color: "#8a8a8e", lineHeight: 1.5 }}>
+                {job.error?.includes("not connected")
+                  ? "Connect your LinkedIn account in Settings first."
+                  : job.error}
+              </p>
+            </div>
+            {(job.error?.includes("not connected") || job.error?.includes("expired")) && (
+              <a href="/settings" style={{
+                flexShrink: 0, fontSize: 12, fontWeight: 600, color: "#0a0a0a",
+                background: "#f5f5f7", border: "1.5px solid #e0e0e2",
+                padding: "7px 14px", borderRadius: 7,
+                textDecoration: "none", whiteSpace: "nowrap",
+              }}>
+                Settings
               </a>
             )}
           </div>
         )}
 
-        {/* Results */}
+        {/* Results table */}
         {leads.length > 0 && (
           <div className="card" style={{ overflow: "hidden" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderBottom: "1px solid #e8e8ea" }}>
-              <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#0a0a0a" }}>
-                {job?.status === "completed" ? "Results" : "Live results"}{" "}
-                <span style={{ fontWeight: 400, color: "#6b6b70" }}>({leads.length})</span>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "13px 18px", borderBottom: "1px solid #f0f0f2" }}>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#0a0a0a", letterSpacing: "-0.02em" }}>
+                Results{" "}
+                <span style={{ fontWeight: 400, color: "#9a9aa0" }}>({leads.length})</span>
               </p>
-              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                {job?.source === "linkedin" && (
-                  <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 20, background: "#eff6ff", color: "#1b6fd8", border: "1px solid #bfdbfe" }}>
-                    Real LinkedIn profiles
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {job?.status === "completed" && (
+                  <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20, background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
+                    Saved to Leads
                   </span>
                 )}
-                {job?.status === "completed" && (
-                  <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 20, background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
-                    ✓ Saved to Leads
+                {job?.source === "linkedin" && (
+                  <span style={{ fontSize: 11, fontWeight: 500, padding: "3px 9px", borderRadius: 20, background: "#f7f7f8", color: "#6b6b70", border: "1px solid #e8e8ea" }}>
+                    LinkedIn
                   </span>
                 )}
               </div>
@@ -162,21 +171,21 @@ export default function ProspectingPage() {
                 <tbody>
                   {leads.map((lead, i) => (
                     <tr key={i}>
-                      <td style={{ fontWeight: 500, color: "#0a0a0a", whiteSpace: "nowrap" }}>{lead.name || "—"}</td>
+                      <td style={{ fontWeight: 600, color: "#0a0a0a", whiteSpace: "nowrap", letterSpacing: "-0.01em" }}>{lead.name || "—"}</td>
                       <td style={{ color: "#5a5a5e", whiteSpace: "nowrap" }}>{lead.title || "—"}</td>
                       <td style={{ color: "#1a1a1e", whiteSpace: "nowrap" }}>{lead.company || "—"}</td>
-                      <td style={{ color: "#6b6b70", whiteSpace: "nowrap" }}>{(lead as any).company_size || "—"}</td>
+                      <td style={{ color: "#9a9aa0", whiteSpace: "nowrap" }}>{(lead as any).company_size || "—"}</td>
                       <td>
                         {lead.icp_score ? (
                           <span style={{
-                            fontSize: 12, fontWeight: 700, width: 28, height: 28, borderRadius: "50%",
+                            fontSize: 11.5, fontWeight: 700, width: 26, height: 26, borderRadius: "50%",
                             display: "inline-flex", alignItems: "center", justifyContent: "center",
                             background: (lead.icp_score ?? 0) >= 8 ? "#f0fdf4" : (lead.icp_score ?? 0) >= 5 ? "#fffbeb" : "#fff1f2",
                             color: (lead.icp_score ?? 0) >= 8 ? "#166534" : (lead.icp_score ?? 0) >= 5 ? "#92400e" : "#9f1239",
                           }}>{lead.icp_score}</span>
-                        ) : <span style={{ color: "#b0b0b4" }}>—</span>}
+                        ) : <span style={{ color: "#c0c0c4" }}>—</span>}
                       </td>
-                      <td style={{ color: "#6b6b70", fontSize: 12, maxWidth: 240 }}>
+                      <td style={{ color: "#8a8a8e", fontSize: 12, maxWidth: 240 }}>
                         <span style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" } as any}>
                           {lead.score_reason || "—"}
                         </span>
@@ -185,12 +194,12 @@ export default function ProspectingPage() {
                         {lead.linkedin_url ? (
                           <a href={lead.linkedin_url} target="_blank" rel="noopener noreferrer"
                             style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#0077B5", textDecoration: "none", fontWeight: 500, whiteSpace: "nowrap" }}>
-                            <svg viewBox="0 0 24 24" fill="currentColor" width={12} height={12}>
+                            <svg viewBox="0 0 24 24" fill="currentColor" width={11} height={11}>
                               <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/>
                             </svg>
                             View
                           </a>
-                        ) : <span style={{ color: "#b0b0b4", fontSize: 12 }}>—</span>}
+                        ) : <span style={{ color: "#c0c0c4", fontSize: 12 }}>—</span>}
                       </td>
                     </tr>
                   ))}
@@ -202,22 +211,22 @@ export default function ProspectingPage() {
 
         {/* Empty state */}
         {!loading && !job && (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "80px 0" }}>
-            <div style={{ width: 52, height: 52, borderRadius: "50%", background: "#eff6ff", border: "1.5px solid #bfdbfe", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 16 }}>
-              <svg viewBox="0 0 24 24" fill="#0077B5" width={26} height={26}>
-                <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "72px 0" }}>
+            <div style={{ width: 44, height: 44, borderRadius: 12, background: "#f7f7f8", border: "1px solid #e8e8ea", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 16 }}>
+              <svg viewBox="0 0 20 20" fill="#9a9aa0" width={20} height={20}>
+                <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
               </svg>
             </div>
-            <p style={{ margin: "0 0 6px", fontSize: 14, fontWeight: 500, color: "#0a0a0a" }}>Find real LinkedIn profiles</p>
-            <p style={{ margin: "0 0 20px", fontSize: 13, color: "#6b6b70", textAlign: "center", maxWidth: 340 }}>
-              Describe who you're looking for. Talon searches real LinkedIn profiles and scores them for your ICP.
+            <p style={{ margin: "0 0 5px", fontSize: 14, fontWeight: 700, color: "#0a0a0a", letterSpacing: "-0.025em" }}>Search for people</p>
+            <p style={{ margin: "0 0 20px", fontSize: 13, color: "#9a9aa0", textAlign: "center", maxWidth: 300, lineHeight: 1.6 }}>
+              Describe your ICP and Talon finds matching LinkedIn profiles.
             </p>
             <a href="/settings" style={{
-              fontSize: 12, fontWeight: 500, color: "#1b6fd8",
-              background: "#eff6ff", border: "1.5px solid #bfdbfe",
-              padding: "6px 16px", borderRadius: 20, textDecoration: "none",
+              fontSize: 12, fontWeight: 500, color: "#6b6b70",
+              background: "#f7f7f8", border: "1px solid #e8e8ea",
+              padding: "6px 14px", borderRadius: 20, textDecoration: "none",
             }}>
-              Make sure LinkedIn is connected →
+              LinkedIn must be connected
             </a>
           </div>
         )}

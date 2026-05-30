@@ -43,14 +43,28 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
 
 @router.get("/recent", response_model=List[LeadResponse])
 async def get_recent_leads(limit: int = 10, db: AsyncSession = Depends(get_db)):
-    """Return leads with status='new' (never reached out to), newest first."""
+    """Return status='new' leads that have a LinkedIn URL (real prospects, not AI-generated)."""
     result = await db.execute(
         select(Lead)
         .where(Lead.status == "new")
+        .where(Lead.linkedin_url.isnot(None))
         .order_by(desc(Lead.created_at))
         .limit(limit)
     )
     return result.scalars().all()
+
+
+@router.delete("/")
+async def delete_all_leads(db: AsyncSession = Depends(get_db)):
+    """Delete every lead in the database — used to reset the pipeline."""
+    from sqlalchemy import delete as sa_delete
+    from models import LinkedInOutreachLog, EmailSent
+    # Delete dependent rows first
+    await db.execute(sa_delete(LinkedInOutreachLog))
+    await db.execute(sa_delete(EmailSent))
+    await db.execute(sa_delete(Lead))
+    await db.commit()
+    return {"message": "All leads deleted"}
 
 
 @router.get("/", response_model=List[LeadResponse])

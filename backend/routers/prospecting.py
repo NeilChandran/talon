@@ -1,8 +1,10 @@
 """
-Prospecting router — only returns real LinkedIn profiles.
-No AI-generated lead fallback. If LinkedIn is not connected, job fails fast.
+Prospecting router — returns real LinkedIn profiles.
+Uses Apify (Google Search + Profile Scraper) as the primary engine.
+Falls back to local browser CDP if Apify is unavailable.
 """
 import asyncio
+import os
 import uuid
 from typing import Dict, Any
 
@@ -16,7 +18,8 @@ from services.claude_service import (
     score_lead,
     enrich_linkedin_leads,
 )
-from services.linkedin_service import load_session, search_people
+from services.linkedin_service import load_session, search_people, clear_session
+from services.apify_service import search_people_apify, APIFY_TOKEN
 
 router = APIRouter()
 
@@ -40,37 +43,57 @@ async def run_prospecting_job(job_id: str, query: str):
         jobs[job_id]["step"] = "Parsing search criteria..."
         parsed = await parse_prospecting_query(query)
 
-        # Step 2: Search LinkedIn for real profiles
-        keywords = parsed.get("linkedin_keywords") or " ".join(
-            parsed.get("target_roles", ["founder"])[:3]
+        # Step 2: Search for real LinkedIn profiles
+        # Keywords: short 1-3 word terms work best for both Apify and direct LinkedIn search
+        raw_kw = parsed.get("linkedin_keywords") or " ".join(
+            parsed.get("target_roles", ["founder"])[:2]
         )
-        print(f"[job {job_id[:8]}] LinkedIn search: {keywords!r}", flush=True)
+        keywords = " ".join(raw_kw.split()[:3])  # hard cap: 3 words max
+        print(f"[job {job_id[:8]}] searching: {keywords!r} (from: {raw_kw!r})", flush=True)
         jobs[job_id]["step"] = f"Searching LinkedIn for: {keywords}..."
 
-        try:
-            people = await search_people(
-                keywords=keywords,
-                li_at=sess["li_at"],
-                jsessionid=sess.get("jsessionid", "ajax:0"),
-                count=25,
-            )
-        except Exception as e:
-            import traceback
-            print(f"[job {job_id[:8]}] LinkedIn search error: {e}", flush=True)
-            traceback.print_exc()
-            jobs[job_id]["status"] = "failed"
-            jobs[job_id]["error"] = f"LinkedIn search failed: {str(e)}"
-            jobs[job_id]["step"] = "Search failed"
-            return
+        people = []
 
-        print(f"[job {job_id[:8]}] LinkedIn returned {len(people)} profiles", flush=True)
+        # ── Primary: Apify (Google Search + LinkedIn Profile Scraper) ──────
+        if APIFY_TOKEN:
+            jobs[job_id]["step"] = f"Searching via Apify for: {keywords}..."
+            try:
+                people = await search_people_apify(keywords, count=25)
+                print(f"[job {job_id[:8]}] Apify returned {len(people)} profiles", flush=True)
+            except Exception as e:
+                print(f"[job {job_id[:8]}] Apify error: {e}", flush=True)
+
+        # ── Fallback: local browser CDP search ──────────────────────────────
+        if not people and sess:
+            jobs[job_id]["step"] = f"Trying browser search for: {keywords}..."
+            try:
+                _known = {"li_at", "jsessionid", "bcookie", "bscookie", "name", "headline", "linkedin_url"}
+                _extra = {k: v for k, v in sess.items() if k not in _known and isinstance(v, str) and v}
+                people = await search_people(
+                    keywords=keywords,
+                    li_at=sess["li_at"],
+                    jsessionid=sess.get("jsessionid", "ajax:0"),
+                    count=25,
+                    bcookie=sess.get("bcookie", ""),
+                    bscookie=sess.get("bscookie", ""),
+                    extra_cookies=_extra if _extra else None,
+                ) or []
+                print(f"[job {job_id[:8]}] browser returned {len(people)} profiles", flush=True)
+            except Exception as e:
+                print(f"[job {job_id[:8]}] browser search error: {e}", flush=True)
 
         if not people:
-            jobs[job_id]["status"] = "completed"
-            jobs[job_id]["step"] = "No LinkedIn profiles matched — try different keywords"
-            jobs[job_id]["total"] = 0
-            jobs[job_id]["source"] = "linkedin"
+            err_msg = (
+                "No LinkedIn profiles found. "
+                + ("Add your APIFY_API_TOKEN in Settings to enable reliable search." if not APIFY_TOKEN
+                   else f"No results for '{keywords}' — try broader terms.")
+            )
+            jobs[job_id]["status"] = "failed"
+            jobs[job_id]["error"] = err_msg
+            jobs[job_id]["step"] = "No results found"
             return
+
+        print(f"[job {job_id[:8]}] total profiles to process: {len(people)}", flush=True)
 
         # Step 3: Enrich with Claude (add company size, tech stack, etc.)
         jobs[job_id]["step"] = f"Enriching {len(people)} real LinkedIn profiles..."

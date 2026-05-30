@@ -29,14 +29,25 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 export const getLinkedInStatus = () =>
   request<LinkedInSession>("/linkedin/session/status");
 
-export const connectLinkedIn = (li_at: string) =>
+export const connectLinkedIn = (li_at: string, jsessionid: string, bcookie: string, bscookie: string) =>
   request<LinkedInSession>("/linkedin/session", {
     method: "POST",
-    body: JSON.stringify({ li_at }),
+    body: JSON.stringify({ li_at, jsessionid, bcookie, bscookie }),
   });
+
+// Opens a real Chrome window for the user to log in — waits up to 3 minutes
+export const loginWithLinkedInBrowser = () =>
+  fetch("/api/linkedin/session/browser-login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(210_000), // 3.5 minute client timeout
+  }).then(r => r.json() as Promise<LinkedInSession>);
 
 export const disconnectLinkedIn = () =>
   request<{ connected: boolean }>("/linkedin/session", { method: "DELETE" });
+
+export const testLinkedInSession = () =>
+  request<LinkedInSession>("/linkedin/session/test");
 
 // ─── Leads ───────────────────────────────────────────────────────────────────
 
@@ -69,6 +80,9 @@ export const updateLeadStatus = (id: string, status: LeadStatus) =>
 
 export const deleteLead = (id: string) =>
   request<{ message: string }>(`/leads/${id}`, { method: "DELETE" });
+
+export const deleteAllLeads = () =>
+  request<{ message: string }>("/leads", { method: "DELETE" });
 
 // ─── Prospecting ─────────────────────────────────────────────────────────────
 

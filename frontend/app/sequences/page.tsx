@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   getSequences, createSequence, updateSequence, deleteSequence,
   runSequence, getAutomationJob, getLeads, getLinkedInStatus,
+  testLinkedInSession,
 } from "@/lib/api";
 import { peek, put } from "@/lib/cache";
 import type { AutomationJob, Lead, LinkedInSession, Sequence, SequenceType } from "@/types";
@@ -292,6 +293,55 @@ function RunModal({ seq, leads, onClose }: { seq: Sequence; leads: Lead[]; onClo
   );
 }
 
+// ─── Test Connection Button ───────────────────────────────────────────────────
+
+function TestConnectionButton() {
+  const [state, setState] = useState<"idle" | "testing" | "ok" | "fail">("idle");
+  const [msg, setMsg] = useState("");
+
+  const handleTest = async () => {
+    setState("testing");
+    try {
+      const r = await testLinkedInSession();
+      if (r.connected) {
+        setState("ok");
+        setMsg(r.name ? `Session valid — ${r.name}` : "Session valid");
+      } else {
+        setState("fail");
+        setMsg(r.error || "Session invalid — reconnect in Settings");
+      }
+    } catch {
+      setState("fail");
+      setMsg("Could not reach LinkedIn — check your connection");
+    }
+    setTimeout(() => setState("idle"), 4000);
+  };
+
+  const colors = {
+    idle: { color: "#5a5a5e", border: "#d8d8dc" },
+    testing: { color: "#8a8a8e", border: "#e0e0e2" },
+    ok: { color: "#166534", border: "#bbf7d0" },
+    fail: { color: "#9f1239", border: "#fecdd3" },
+  }[state];
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      {msg && <span style={{ fontSize: 11, color: colors.color, maxWidth: 220 }}>{msg}</span>}
+      <button
+        onClick={handleTest}
+        disabled={state === "testing"}
+        style={{
+          fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: 6, whiteSpace: "nowrap",
+          background: "none", border: `1.5px solid ${colors.border}`, cursor: state === "testing" ? "wait" : "pointer",
+          color: colors.color,
+        }}
+      >
+        {state === "testing" ? "Testing..." : "Test Connection"}
+      </button>
+    </div>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function SequencesPage() {
@@ -342,14 +392,11 @@ export default function SequencesPage() {
   return (
     <>
       <header className="page-header">
-        <div>
-          <h1 className="page-title">Sequences</h1>
-          <p className="page-subtitle">LinkedIn outreach sequences — click Run to connect and message automatically</p>
-        </div>
+        <h1 className="page-title">Sequences</h1>
         <button onClick={() => { setEditing(null); setShowModal(true); }} className="btn-primary">+ New Sequence</button>
       </header>
 
-      <div style={{ padding: "0 36px 36px" }}>
+      <div style={{ padding: "0 40px 40px" }}>
         {/* Status banner */}
         {liSession && !liSession.connected && (
           <div style={{ marginBottom: 20, padding: "12px 16px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 9, display: "flex", gap: 12, alignItems: "center" }}>
@@ -364,11 +411,14 @@ export default function SequencesPage() {
         )}
 
         {liSession?.connected && (
-          <div style={{ marginBottom: 20, padding: "12px 16px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 9, display: "flex", gap: 12, alignItems: "center" }}>
-            <span style={{ fontSize: 16 }}>✅</span>
-            <p style={{ margin: 0, fontSize: 13, color: "#166534" }}>
-              <strong>{liSession.name}</strong> connected · {liCount} lead{liCount !== 1 ? "s" : ""} ready for automation
-            </p>
+          <div style={{ marginBottom: 20, padding: "12px 16px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 9, display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+              <span style={{ fontSize: 16 }}>✅</span>
+              <p style={{ margin: 0, fontSize: 13, color: "#166534" }}>
+                <strong>{liSession.name}</strong> connected · {liCount} lead{liCount !== 1 ? "s" : ""} ready for automation
+              </p>
+            </div>
+            <TestConnectionButton />
           </div>
         )}
 

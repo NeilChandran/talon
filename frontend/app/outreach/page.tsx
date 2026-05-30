@@ -76,13 +76,10 @@ function OutreachContent() {
   return (
     <>
       <header className="page-header">
-        <div>
-          <h1 className="page-title">Outreach</h1>
-          <p className="page-subtitle">AI-personalized LinkedIn messages — select leads, pick type, generate</p>
-        </div>
+        <h1 className="page-title">Outreach</h1>
       </header>
 
-      <div style={{ padding: "0 36px 36px", display: "grid", gridTemplateColumns: "220px 1fr 1fr", gap: 20, alignItems: "start" }}>
+      <div style={{ padding: "0 40px 40px", display: "grid", gridTemplateColumns: "220px 1fr 1fr", gap: 20, alignItems: "start" }}>
 
         {/* Col 1: Lead list */}
         <div className="card" style={{ overflow: "hidden" }}>

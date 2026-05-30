@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
-import { getLeads, updateLeadStatus, deleteLead } from "@/lib/api";
+import { getLeads, updateLeadStatus, deleteLead, deleteAllLeads } from "@/lib/api";
 import { peek, put } from "@/lib/cache";
 import type { Lead, LeadStatus } from "@/types";
 
@@ -94,18 +94,34 @@ export default function LeadsPage() {
   return (
     <>
       <header className="page-header">
-        <div>
-          <h1 className="page-title">Leads</h1>
-          <p className="page-subtitle">{leads.length} contacts · {liCount} with LinkedIn IDs</p>
+        <h1 className="page-title">Leads</h1>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {selected.size > 0 && (
+            <Link href={`/outreach?ids=${Array.from(selected).join(",")}`} className="btn-primary">
+              Generate Messages ({selected.size})
+            </Link>
+          )}
+          {leads.length > 0 && (
+            <button
+              onClick={async () => {
+                if (!confirm(`Delete all ${leads.length} leads? This cannot be undone.`)) return;
+                await deleteAllLeads();
+                setLeads([]);
+                setSelected(new Set());
+                put("leads", []);
+                put("home-leads", []);
+              }}
+              style={{ fontSize: 12, color: "#8a8a8e", background: "none", border: "1.5px solid #e0e0e2", borderRadius: 7, cursor: "pointer", padding: "7px 12px" }}
+              onMouseOver={e => { e.currentTarget.style.color = "#D90429"; e.currentTarget.style.borderColor = "#fecdd3"; }}
+              onMouseOut={e => { e.currentTarget.style.color = "#8a8a8e"; e.currentTarget.style.borderColor = "#e0e0e2"; }}
+            >
+              Clear all
+            </button>
+          )}
         </div>
-        {selected.size > 0 && (
-          <Link href={`/outreach?ids=${Array.from(selected).join(",")}`} className="btn-primary">
-            Generate Messages ({selected.size})
-          </Link>
-        )}
       </header>
 
-      <div style={{ padding: "0 36px 36px" }}>
+      <div style={{ padding: "0 40px 40px" }}>
         {/* Filters */}
         <div style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
           <div style={{ position: "relative", flex: 1, minWidth: 200 }}>

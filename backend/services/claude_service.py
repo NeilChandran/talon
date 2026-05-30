@@ -35,9 +35,24 @@ async def parse_prospecting_query(query: str) -> Dict[str, Any]:
         messages=[
             {
                 "role": "user",
-                "content": f"""Parse this lead prospecting description into LinkedIn search keywords.
+                "content": f"""You are extracting a SHORT LinkedIn people-search keyword string from a natural language query.
 
 Query: {query}
+
+Rules for linkedin_keywords:
+- MAXIMUM 3 words total — LinkedIn search works best with short terms
+- Use the most identifying words only (e.g. "YC founder", "startup CEO", "chief of staff")
+- Do NOT include generic words like "technology", "early", "stage", "building", "company"
+- If query mentions YC/Y Combinator → include "YC"
+- If query mentions a specific batch (W24, S23) → include that
+- Focus on job title + maybe 1 company/org qualifier
+
+Examples:
+- "YC W24 founders building B2B SaaS" → "YC founder"
+- "startup founder" → "startup founder"
+- "Chiefs of staff at VC-backed startups" → "chief of staff"
+- "Seed-stage startup founders in SF" → "startup founder"
+- "Co-founders of developer tools companies" → "developer tools founder"
 
 Return a JSON object with:
 - target_roles: list of job title keywords (e.g. ["founder", "CEO", "co-founder"])
@@ -45,7 +60,7 @@ Return a JSON object with:
 - company_size: employee count range
 - stage: funding stage if relevant
 - industry: industry focus
-- linkedin_keywords: a single optimized keyword string for LinkedIn people search (5-8 words max, e.g. "founder CEO SaaS startup seed stage")
+- linkedin_keywords: SHORT 1-3 word string for LinkedIn people search (see rules above)
 
 Return ONLY valid JSON, no other text.""",
             }

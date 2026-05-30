@@ -11,13 +11,16 @@ interface Entry {
 
 const store = new Map<string, Entry>();
 
+// Default TTL: 2 minutes — long enough that every page load is instant
+export const DEFAULT_TTL = 120_000;
+
 /** Return cached value if it exists (even if stale). */
 export function peek<T>(key: string): T | undefined {
   return store.has(key) ? (store.get(key)!.data as T) : undefined;
 }
 
 /** Return cached value only if fresh (within ttl). */
-export function get<T>(key: string, ttl = 30_000): T | undefined {
+export function get<T>(key: string, ttl = DEFAULT_TTL): T | undefined {
   const v = store.get(key);
   if (!v) return undefined;
   if (Date.now() - v.at > ttl) return undefined;
@@ -35,7 +38,7 @@ export function invalidate(key: string): void {
 }
 
 /** Check if a cached value is stale. */
-export function isStale(key: string, ttl = 30_000): boolean {
+export function isStale(key: string, ttl = DEFAULT_TTL): boolean {
   const v = store.get(key);
   if (!v) return true;
   return Date.now() - v.at > ttl;

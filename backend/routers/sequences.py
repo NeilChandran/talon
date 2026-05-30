@@ -106,6 +106,8 @@ async def _resolve_profile_ids(lead: Lead, sess: dict, job: dict) -> Lead:
         linkedin_url=lead.linkedin_url,
         li_at=sess["li_at"],
         jsessionid=sess.get("jsessionid", "ajax:0"),
+        bcookie=sess.get("bcookie", ""),
+        bscookie=sess.get("bscookie", ""),
     )
 
     if ids:
@@ -139,6 +141,8 @@ async def _run_automation(job_id: str, lead_ids: List[str], sequence_id: str):
         job["status"] = "failed"
         job["error"] = "No LinkedIn session — connect your account in Settings first"
         return
+
+    # No pre-validation — let individual API calls fail with specific errors if session is bad
 
     async with AsyncSessionLocal() as db:
         seq_result = await db.execute(
@@ -202,6 +206,8 @@ async def _run_automation(job_id: str, lead_ids: List[str], sequence_id: str):
                         note=note,
                         li_at=sess["li_at"],
                         jsessionid=sess.get("jsessionid", "ajax:0"),
+                        bcookie=sess.get("bcookie", ""),
+                        bscookie=sess.get("bscookie", ""),
                     )
                     if resp["success"]:
                         result_entry["status"] = "sent"
@@ -239,6 +245,8 @@ async def _run_automation(job_id: str, lead_ids: List[str], sequence_id: str):
                         message=message_text,
                         li_at=sess["li_at"],
                         jsessionid=sess.get("jsessionid", "ajax:0"),
+                        bcookie=sess.get("bcookie", ""),
+                        bscookie=sess.get("bscookie", ""),
                     )
                     if resp["success"]:
                         result_entry["status"] = "sent"
