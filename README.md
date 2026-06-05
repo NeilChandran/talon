@@ -1,7 +1,7 @@
 # Talon — AI-Powered B2B LinkedIn Outreach Agent
 
 **Repo:** github.com/NeilChandran/talon  
-**Demo video:** [https://drive.google.com/file/d/18TQxJRrnpxKec2hCpj6zO_H68BNsu2Ra/view?usp=sharing]
+**Demo video:** https://drive.google.com/file/d/18TQxJRrnpxKec2hCpj6zO_H68BNsu2Ra/view?usp=sharing
 
 ---
 
