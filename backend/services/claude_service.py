@@ -276,8 +276,10 @@ Return ONLY the note text, nothing else.""",
         ],
     )
 
+    from services.outreach_templates import fit_connection_note
+
     note = message.content[0].text.strip()
-    return note[:300]
+    return fit_connection_note(note)
 
 
 async def generate_linkedin_message(lead: Dict[str, Any], message_type: str = "follow_up_message") -> str:

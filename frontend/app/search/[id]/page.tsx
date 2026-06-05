@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from "react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
   getRecentSearches,
-  getSearch,
+  getSearchOrNull,
+  prepareSearchCampaign,
   pushSearchToInstantly,
   refreshSearchLeads,
   resumeSearch,
@@ -14,6 +15,10 @@ import {
   sendSearchLinkedIn,
 } from "@/lib/api";
 import type { RecentSearch, SearchDetail, SearchLead } from "@/lib/api";
+import SearchCampaignPane from "@/components/SearchCampaignPane";
+import { useSearchRealtime } from "@/lib/useSearchRealtime";
+import { friendlyChatError, searchFailHint, talonMessage } from "@/lib/brand";
+import type { CampaignEnrollment } from "@/types";
 
 function tabLabel(prompt: string) {
   const words = prompt.split(/\s+/).slice(0, 4).join(" ");
@@ -44,12 +49,14 @@ function outreachBadgeClass(label: string) {
   if (l === "replied" || l === "completed") return "completed";
   if (l === "ongoing") return "ongoing";
   if (l === "failed") return "failed";
+  if (l === "drafted") return "drafted";
   return "ready";
 }
 
 function SearchWorkspace() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const searchId = params.id as string;
 
   const [search, setSearch] = useState<SearchDetail | null>(null);
@@ -69,36 +76,64 @@ function SearchWorkspace() {
   const [pushing, setPushing] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
+  const [campaignOpen, setCampaignOpen] = useState(false);
+  const [campaignLoading, setCampaignLoading] = useState(false);
+  const [campaignId, setCampaignId] = useState<string | null>(null);
+  const [campaignMeta, setCampaignMeta] = useState<{
+    id: string;
+    name: string;
+    connection_note_template: string;
+    message_template: string;
+    wait_days_after_accept: number;
+  } | null>(null);
+  const [campaignEnrollments, setCampaignEnrollments] = useState<CampaignEnrollment[]>([]);
+  const [campaignLeadId, setCampaignLeadId] = useState<string | null>(null);
   const [chatSending, setChatSending] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const pollRef = useRef<NodeJS.Timeout | null>(null);
+  const [chatMessages, setChatMessages] = useState<{ role: "user" | "assistant"; text: string }[]>([]);
   const menuRef = useRef<HTMLDivElement>(null);
   const autoNameSyncRef = useRef(false);
+  const autoResumeRef = useRef(false);
+  const campaignDeepLinkRef = useRef(false);
 
   const load = useCallback(async () => {
     const [s, r] = await Promise.all([
-      getSearch(searchId),
+      getSearchOrNull(searchId),
       getRecentSearches().catch(() => [] as RecentSearch[]),
     ]);
+    if (!s) {
+      setSearch(null);
+      return null;
+    }
     setSearch(s);
     setRecent(r);
     return s;
-  }, [searchId]);
+  }, [searchId, router]);
 
   useEffect(() => {
-    load().then((s) => {
-      const active = s?.status === "running";
-      if (active && !pollRef.current) {
-        pollRef.current = setInterval(() => load(), 3000);
-      } else if (pollRef.current && !active) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    });
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
+    load().catch(() => setSearch(null));
   }, [load]);
+
+  useSearchRealtime({ searchId, search, setSearch, reload: load });
+
+  useEffect(() => {
+    if (autoResumeRef.current || !search) return;
+    const createdMs = search.created_at ? new Date(search.created_at).getTime() : Date.now();
+    const ageSec = (Date.now() - createdMs) / 1000;
+    const queued = /queued/i.test(search.status_message || "");
+    const stuckQueued = search.status === "running" && queued && ageSec > 20;
+    const stuckNoJob =
+      search.status === "running" &&
+      !search.origami_job_id &&
+      (search.lead_count ?? 0) === 0 &&
+      ageSec > 60;
+    if (stuckQueued || stuckNoJob) {
+      autoResumeRef.current = true;
+      resumeSearch(searchId)
+        .then(() => load())
+        .catch(() => {});
+    }
+  }, [search, searchId, load]);
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -132,34 +167,60 @@ function SearchWorkspace() {
     const text = chatInput.trim();
     if (!text || chatSending) return;
     setChatSending(true);
+    setChatMessages((m) => [...m, { role: "user", text }]);
+    setChatInput("");
     try {
       const r = await searchAgentMessage(searchId, text);
-      setChatInput("");
+      setChatMessages((m) => [...m, { role: "assistant", text: r.reply }]);
       if (r.outreach?.linkedin_connection) setLinkedInNote(r.outreach.linkedin_connection);
       await load();
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : "Could not update message");
+      const raw = e instanceof Error ? e.message : "Could not update message";
+      const err = friendlyChatError(raw, (search?.leads?.length ?? 0) > 0);
+      setChatMessages((m) => [...m, { role: "assistant", text: err }]);
     } finally {
       setChatSending(false);
     }
   };
 
   const rows: SearchLead[] = search?.leads ?? [];
+  const hasList = rows.length > 0;
   const selectedLead = rows.find((r) => r.id === selectedLeadId) ?? null;
   const progress = search?.progress;
-  const building = search?.status === "running";
-  const needsInput = search?.status === "needs_input";
-  const failed = search?.status === "failed";
-  const done = search?.status === "completed";
+  const building = search?.status === "running" && !hasList;
+  const needsInput = search?.status === "needs_input" && !hasList;
+  const failed = search?.status === "failed" && !hasList;
+  const done = search?.status === "completed" || hasList;
+
+  const openCampaign = async (leadId?: string) => {
+    setCampaignLoading(true);
+    try {
+      const r = await prepareSearchCampaign(searchId);
+      setCampaignId(r.campaign_id);
+      setCampaignMeta(r.campaign);
+      setCampaignEnrollments(r.enrollments);
+      setCampaignLeadId(leadId || null);
+      setCampaignOpen(true);
+      await load();
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : "Could not open campaign");
+    } finally {
+      setCampaignLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (campaignDeepLinkRef.current || !search || search.status !== "completed") return;
+    if (searchParams.get("campaign") !== "1") return;
+    campaignDeepLinkRef.current = true;
+    openCampaign(searchParams.get("lead") || undefined);
+  }, [search, searchParams]);
 
   const onResume = async () => {
     setResuming(true);
     try {
       await resumeSearch(searchId);
       await load();
-      if (!pollRef.current) {
-        pollRef.current = setInterval(() => load(), 3000);
-      }
     } catch (e: unknown) {
       alert(e instanceof Error ? e.message : "Could not resume search");
     } finally {
@@ -183,12 +244,31 @@ function SearchWorkspace() {
 
   const assistantBody = useMemo(() => {
     if (!search) return null;
+    if (hasList) {
+      const allDrafted = rows.every((r) => (r.linkedin_outreach_label || "").toLowerCase() === "drafted");
+      return (
+        <>
+          <p style={{ margin: "0 0 8px" }}>
+            <strong>{rows.length} {wantsFounders ? "founders" : "leads"}</strong> in your table.
+            {allDrafted
+              ? " LinkedIn connection notes are drafted and ready to go — click any row to preview."
+              : " Say “reach out on LinkedIn” to draft messages for everyone."}
+          </p>
+          {allDrafted && sampleLinkedIn && (
+            <p style={{ margin: 0, fontSize: 13, color: "var(--text-muted)", lineHeight: 1.5 }}>
+              Preview (step 1): {sampleLinkedIn.slice(0, 120)}
+              {sampleLinkedIn.length > 120 ? "…" : ""}
+            </p>
+          )}
+        </>
+      );
+    }
     if (done) {
       return (
         <>
           <p style={{ margin: "0 0 8px" }}>
             <strong>{rows.length} {wantsFounders ? "founders" : "leads"}</strong> ready — outreach copy is prepared.
-            {search.status_message ? ` ${search.status_message}` : ""}
+            {search.status_message ? ` ${talonMessage(search.status_message)}` : ""}
           </p>
           {sampleLinkedIn && (
             <div className="hedwig-suggested" style={{ marginTop: 12, marginBottom: 12 }}>
@@ -211,13 +291,37 @@ function SearchWorkspace() {
         </>
       );
     }
+    if (failed) {
+      return (
+        <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: "var(--text-secondary)" }}>
+          {searchFailHint(search.status_message, hasList)}
+        </p>
+      );
+    }
     return (
       <p style={{ margin: 0 }}>
         {building && <span className="hedwig-spinner" />}
-        {search.status_message || (wantsFounders ? "Finding founders…" : "Starting Origami list build…")}
+        {talonMessage(search.status_message) || (wantsFounders ? "Finding founders…" : "Building your list…")}
       </p>
     );
-  }, [search, done, building, rows.length, sampleLinkedIn, wantsFounders]);
+  }, [search, done, building, failed, hasList, rows, sampleLinkedIn, wantsFounders]);
+
+  if (campaignOpen && campaignId && campaignMeta) {
+    return (
+      <div className="hedwig-workspace">
+        <SearchCampaignPane
+          searchId={searchId}
+          searchPrompt={search?.prompt ?? "Campaign"}
+          campaignId={campaignId}
+          campaign={campaignMeta}
+          enrollments={campaignEnrollments}
+          initialLeadId={campaignLeadId}
+          onClose={() => setCampaignOpen(false)}
+          onRefresh={() => load()}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="hedwig-workspace">
@@ -240,20 +344,30 @@ function SearchWorkspace() {
               <>
                 <div className="hedwig-msg-user">{search.prompt}</div>
                 <div className="hedwig-msg-assistant">{assistantBody}</div>
+                {chatMessages.map((m, i) => (
+                  <div key={i} className={m.role === "user" ? "hedwig-msg-user" : "hedwig-msg-assistant"}>
+                    {m.text}
+                  </div>
+                ))}
+                {chatSending && (
+                  <div className="hedwig-msg-assistant">
+                    <span className="hedwig-spinner" /> Updating…
+                  </div>
+                )}
                 {(needsInput || failed) && (
                   <div style={{ marginTop: 16 }}>
-                    <p style={{ fontSize: 12, color: "#b45309", margin: "0 0 10px" }}>
-                      {failed
-                        ? search?.status_message || "Search failed"
-                        : "Origami asked clarifying questions — click Continue to auto-answer and finish."}
-                    </p>
+                    {needsInput && (
+                      <p style={{ fontSize: 12, color: "#b45309", margin: "0 0 10px" }}>
+                        Talon needs a quick answer — click Continue to finish.
+                      </p>
+                    )}
                     <button
                       type="button"
                       className="hedwig-send-export"
                       disabled={resuming}
                       onClick={onResume}
                     >
-                      {resuming ? "Continuing…" : "Continue search"}
+                      {resuming ? "Starting…" : failed ? "Try again" : "Continue search"}
                     </button>
                   </div>
                 )}
@@ -265,7 +379,7 @@ function SearchWorkspace() {
                   </div>
                 )}
                 <p style={{ marginTop: 12, fontSize: 12, color: "var(--text-muted)" }}>
-                  Research powered by Origami · send and track outreach in Talon only.
+                  Talon research · send and track outreach without leaving the app.
                 </p>
               </>
             )}
@@ -336,7 +450,7 @@ function SearchWorkspace() {
             </div>
           </div>
 
-          {(building || progress) && (
+          {!hasList && (building || progress) && (
             <div className="hedwig-progress-wrap">
               <div className="hedwig-progress-track">
                 <div
@@ -345,10 +459,10 @@ function SearchWorkspace() {
                 />
               </div>
               <div className="hedwig-progress-label">
-                <span>{progress?.label ?? search?.status_message ?? "Working…"}</span>
+                <span>{talonMessage(progress?.label ?? search?.status_message) || "Working…"}</span>
                 <span>
-                  {progress?.leads_found ?? rows.length}
-                  {progress?.target_leads ? ` / ${progress.target_leads}` : ""} founders
+                  {progress?.leads_found ?? rows.length}{" "}
+                  {wantsFounders ? "founders" : "leads"}
                 </span>
               </div>
             </div>
@@ -374,7 +488,13 @@ function SearchWorkspace() {
             </span>
             {rows.length > 0 && (
               <div className="hedwig-update-pill">
-                <button type="button">{rows.length} rows ready ›</button>
+                <button
+                  type="button"
+                  disabled={campaignLoading}
+                  onClick={() => openCampaign()}
+                >
+                  {campaignLoading ? "Opening…" : `${rows.length} rows ready ›`}
+                </button>
               </div>
             )}
             <div className="hedwig-toolbar-right">
@@ -396,7 +516,7 @@ function SearchWorkspace() {
                     }
                   }}
                 >
-                  {refreshing ? "Syncing…" : "Sync names from Origami"}
+                  {refreshing ? "Syncing…" : "Sync names"}
                 </button>
               )}
               <button type="button" className="hedwig-toolbar-icon" title="Filter" aria-label="Filter">
@@ -436,7 +556,7 @@ function SearchWorkspace() {
             <table className="hedwig-table">
               <thead>
                 <tr>
-                  {["#", "First Name", "Last Name", "Title", "Company", "LinkedIn Outreach", "Score"].map((h) => (
+                  {["#", "First Name", "Last Name", "Title", "Company", "LinkedIn", "LinkedIn Outreach", "Score"].map((h) => (
                     <th key={h}>{h}</th>
                   ))}
                 </tr>
@@ -444,14 +564,14 @@ function SearchWorkspace() {
               <tbody>
                 {rows.length === 0 ? (
                   <tr>
-                    <td colSpan={7} style={{ padding: 48, textAlign: "center", color: "var(--text-muted)" }}>
+                    <td colSpan={8} style={{ padding: 48, textAlign: "center", color: "var(--text-muted)" }}>
                       {building ? (
                         <>
                           <span className="hedwig-spinner" />
-                          {search?.status_message || (wantsFounders ? "Finding founders…" : "Building list…")}
+                          {talonMessage(search?.status_message) || (wantsFounders ? "Finding founders…" : "Building list…")}
                         </>
                       ) : (
-                        wantsFounders ? "No founders yet — Origami may still be building the people table" : "No leads yet"
+                        wantsFounders ? "No founders yet — still building your list" : "No leads yet"
                       )}
                     </td>
                   </tr>
@@ -467,10 +587,33 @@ function SearchWorkspace() {
                         <td>{r.title || "—"}</td>
                         <td>{r.company || "—"}</td>
                         <td>
+                          {r.linkedin_url ? (
+                            <a
+                              href={r.linkedin_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ color: "#0077B5", fontSize: 12 }}
+                            >
+                              {(r.linkedin_url || "").split("/in/")[1]?.replace(/\/$/, "") || "Profile"}
+                            </a>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td>
                           <button
                             type="button"
                             className={`hedwig-outreach-badge ${outreachBadgeClass(r.linkedin_outreach_label || "Ready")}`}
-                            onClick={() => setSelectedLeadId(r.id)}
+                            disabled={campaignLoading}
+                            onClick={() => {
+                              const drafted =
+                                (r.linkedin_outreach_label || "").toLowerCase() === "drafted";
+                              if (drafted || hasList) {
+                                openCampaign(r.id);
+                              } else {
+                                setSelectedLeadId(r.id);
+                              }
+                            }}
                           >
                             {r.linkedin_outreach_label || "Ready"}
                           </button>
@@ -501,7 +644,11 @@ function SearchWorkspace() {
               <div className="step-card">
                 <div className="step-card-head">
                   <span style={{ fontWeight: 600 }}>Step 1 — Connection request</span>
-                  <span className="badge badge-gray">Draft</span>
+                  <span className="badge badge-gray">
+                    {(selectedLead.linkedin_outreach_label || "").toLowerCase() === "drafted"
+                      ? "Drafted and ready to go"
+                      : "Draft"}
+                  </span>
                 </div>
                 <div style={{ padding: 14 }}>
                   <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>
@@ -554,7 +701,7 @@ function SearchWorkspace() {
           <div className="card" style={{ width: "min(540px, 92vw)", padding: 24 }} onClick={(e) => e.stopPropagation()}>
             <h2 style={{ margin: "0 0 6px", fontSize: 18 }}>Send from Talon</h2>
             <p style={{ margin: "0 0 20px", fontSize: 13, color: "var(--text-secondary)" }}>
-              Origami found your list — outreach runs here. You never leave Talon.
+              Your list is ready — run outreach here without leaving Talon.
             </p>
 
             <div style={{ marginBottom: 20, padding: 14, background: "#fafafa", borderRadius: 10, border: "1px solid var(--border)" }}>

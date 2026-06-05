@@ -323,7 +323,7 @@ export default function SettingsPage() {
             <span>Serper: {appSettings?.has_serper ? "✓" : "—"}</span>
             <span>Proxycurl: {appSettings?.has_proxycurl ? "✓" : "—"}</span>
             <span>Instantly: {appSettings?.has_instantly ? "✓" : "—"}</span>
-            <span>Origami: {appSettings?.has_origami ? "✓" : "—"}</span>
+            <span>Talon Research: {appSettings?.has_origami ? "✓" : "—"}</span>
           </div>
           <button
             type="button"

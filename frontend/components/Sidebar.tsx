@@ -1,19 +1,20 @@
 "use client";
 
-import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { getRecentSearches, type RecentSearch } from "@/lib/api";
 import TalonLogo from "@/components/TalonLogo";
+import { hardNavigateClick } from "@/lib/navigation";
+import { WORKSPACE_DELETED } from "@/lib/workspaceEvents";
 
 const MAIN_NAV = [
   { href: "/", label: "Home", icon: "home" },
   { href: "/workspaces", label: "All Workspaces", icon: "layers" },
-  { href: "/scheduled", label: "Scheduled", icon: "clock", beta: true },
 ];
 
 const SEQ_NAV = [
   { href: "/sequencing/campaigns", label: "Campaigns" },
+  { href: "/messages", label: "Messages" },
   { href: "/outreach", label: "Inbox" },
   { href: "/settings", label: "Senders" },
 ];
@@ -31,9 +32,23 @@ export default function Sidebar() {
   const [recent, setRecent] = useState<RecentSearch[]>([]);
   const [seqOpen, setSeqOpen] = useState(true);
 
-  useEffect(() => {
+  const refreshRecent = () => {
     getRecentSearches().then(setRecent).catch(() => {});
+  };
+
+  useEffect(() => {
+    refreshRecent();
   }, [pathname]);
+
+  useEffect(() => {
+    const onDeleted = (e: Event) => {
+      const id = (e as CustomEvent<{ id: string }>).detail?.id;
+      if (id) setRecent((prev) => prev.filter((w) => w.id !== id));
+      refreshRecent();
+    };
+    window.addEventListener(WORKSPACE_DELETED, onDeleted);
+    return () => window.removeEventListener(WORKSPACE_DELETED, onDeleted);
+  }, []);
 
   const active = (href: string) =>
     href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
@@ -42,17 +57,22 @@ export default function Sidebar() {
 
   return (
     <aside className="hedwig-sidebar">
-      <Link href="/" className="hedwig-brand" aria-label="Talon home">
+      <a href="/" data-hard-nav className="hedwig-brand" aria-label="Talon home" onClick={hardNavigateClick("/")}>
         <TalonLogo variant="lockup" size={30} />
-      </Link>
+      </a>
 
       <nav className="hedwig-nav">
         {MAIN_NAV.map((item) => (
-          <Link key={item.href} href={item.href} className={`hedwig-nav-link${active(item.href) ? " active" : ""}`}>
+          <a
+            key={item.href}
+            href={item.href}
+            data-hard-nav
+            className={`hedwig-nav-link${active(item.href) ? " active" : ""}`}
+            onClick={hardNavigateClick(item.href)}
+          >
             <NavIcon name={item.icon} />
             <span>{item.label}</span>
-            {item.beta && <span className="hedwig-badge-beta">BETA</span>}
-          </Link>
+          </a>
         ))}
 
         <button type="button" className="hedwig-nav-link hedwig-nav-btn" onClick={() => setSeqOpen(!seqOpen)}>
@@ -63,33 +83,43 @@ export default function Sidebar() {
           <span className="hedwig-chevron">{seqOpen ? "▾" : "▸"}</span>
         </button>
         {seqOpen && SEQ_NAV.map((item) => (
-          <Link key={item.href} href={item.href} className={`hedwig-nav-link nested${active(item.href) ? " active" : ""}`}>
+          <a
+            key={item.href}
+            href={item.href}
+            data-hard-nav
+            className={`hedwig-nav-link nested${active(item.href) ? " active" : ""}`}
+            onClick={hardNavigateClick(item.href)}
+          >
             {item.label}
-          </Link>
+          </a>
         ))}
 
         <div className="hedwig-section-label">
           <span>RECENT WORKSPACES</span>
-          <Link href="/" className="hedwig-plus" title="New search">+</Link>
+          <a href="/" data-hard-nav className="hedwig-plus" title="New search" onClick={hardNavigateClick("/")}>+</a>
         </div>
         {recent.map((w) => (
-          <Link
+          <a
             key={w.id}
             href={`/search/${w.id}`}
+            data-hard-nav
             className={`hedwig-workspace-link${activeSearch(w.id) ? " active" : ""}`}
+            onClick={hardNavigateClick(`/search/${w.id}`)}
           >
             <span className="hedwig-ws-icon">{w.prompt.charAt(0).toUpperCase()}</span>
             <span className="hedwig-ws-name">{w.prompt}</span>
-          </Link>
+          </a>
         ))}
       </nav>
 
       <div className="hedwig-sidebar-foot">
-        <Link href="/" className="hedwig-foot-link">Learn</Link>
-        <Link href="/settings" className={`hedwig-foot-link${active("/settings") ? " active" : ""}`}>Settings</Link>
+        <a href="/" data-hard-nav className="hedwig-foot-link" onClick={hardNavigateClick("/")}>Learn</a>
+        <a href="/settings" data-hard-nav className={`hedwig-foot-link${active("/settings") ? " active" : ""}`} onClick={hardNavigateClick("/settings")}>Settings</a>
         <div className="hedwig-user">
-          <span className="hedwig-user-avatar">N</span>
-          <span className="hedwig-user-name">You</span>
+          <span className="hedwig-user-avatar">T</span>
+          <span className="hedwig-user-name" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
+            Talon
+          </span>
         </div>
       </div>
     </aside>

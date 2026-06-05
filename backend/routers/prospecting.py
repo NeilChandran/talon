@@ -4,12 +4,12 @@ Uses the same explore pipeline: LinkedIn, Google Maps, Crunchbase, Jobs, News, S
 """
 import asyncio
 import uuid
+from datetime import datetime
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
-from database import AsyncSessionLocal
-from models import Lead
+from store import get_store
 from schemas import ProspectingRequest
 from services.claude_service import parse_prospecting_query, score_lead, enrich_linkedin_leads
 from services.explore.icp_parser import parse_icp_prompt
@@ -159,25 +159,28 @@ async def _score_and_save(job_id: str, people: List[Dict], query: str, persist: 
     await asyncio.gather(*[score_one(p, i) for i, p in enumerate(people[:cap])])
 
     if persist:
-        async with AsyncSessionLocal() as session:
-            for lead_data in scored:
-                session.add(
-                    Lead(
-                        id=uuid.uuid4(),
-                        name=lead_data.get("name", ""),
-                        title=lead_data.get("title", ""),
-                        company=lead_data.get("company", ""),
-                        company_size=lead_data.get("company_size", lead_data.get("size", "")),
-                        email=lead_data.get("email", ""),
-                        linkedin_url=lead_data.get("linkedin_url", ""),
-                        linkedin_profile_id=lead_data.get("linkedin_profile_id", ""),
-                        linkedin_member_id=lead_data.get("linkedin_member_id", ""),
-                        icp_score=lead_data.get("icp_score", 5),
-                        score_reason=lead_data.get("score_reason", ""),
-                        tech_stack=lead_data.get("tech_stack", []),
-                    )
-                )
-            await session.commit()
+        db = get_store()
+        now = datetime.utcnow().isoformat()
+        rows = []
+        for lead_data in scored:
+            rows.append({
+                "id": str(uuid.uuid4()),
+                "name": lead_data.get("name", ""),
+                "title": lead_data.get("title", ""),
+                "company": lead_data.get("company", ""),
+                "company_size": lead_data.get("company_size", lead_data.get("size", "")),
+                "email": lead_data.get("email", ""),
+                "linkedin_url": lead_data.get("linkedin_url", ""),
+                "linkedin_profile_id": lead_data.get("linkedin_profile_id", ""),
+                "linkedin_member_id": lead_data.get("linkedin_member_id", ""),
+                "icp_score": lead_data.get("icp_score", 5),
+                "score_reason": lead_data.get("score_reason", ""),
+                "tech_stack": lead_data.get("tech_stack", []),
+                "created_at": now,
+                "updated_at": now,
+            })
+        if rows:
+            await db.insert_many("leads", rows)
 
     return scored
 

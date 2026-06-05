@@ -1,33 +1,15 @@
-from pathlib import Path
+"""
+Database entrypoint — Supabase + optional authenticated user scope.
+"""
+from typing import Optional
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase
-import os
-from dotenv import load_dotenv
+from fastapi import Depends
 
-load_dotenv()
-
-_default_sqlite = f"sqlite+aiosqlite:///{Path(__file__).parent / 'talon.db'}"
-DATABASE_URL = os.getenv("DATABASE_URL", _default_sqlite)
-
-# Local dev without Postgres/Docker: fall back to SQLite if asyncpg isn't installed
-if DATABASE_URL.startswith("postgresql") and os.getenv("TALON_FORCE_POSTGRES") != "1":
-    try:
-        import asyncpg  # noqa: F401
-    except ImportError:
-        DATABASE_URL = _default_sqlite
-
-engine = create_async_engine(DATABASE_URL, echo=False)
-AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+from auth import get_current_user_id
+from store import get_store
+from user_store import UserStore
 
 
-class Base(DeclarativeBase):
-    pass
-
-
-async def get_db():
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
+async def get_db(user_id: Optional[str] = Depends(get_current_user_id)):
+    """FastAPI dependency — scoped store when logged in, shared store otherwise."""
+    yield UserStore(user_id, get_store())

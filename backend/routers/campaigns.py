@@ -3,11 +3,8 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from models import Campaign, CampaignEnrollment, Lead
 from schemas import (
     CampaignCreate,
     CampaignEnrollmentResponse,
@@ -16,11 +13,28 @@ from schemas import (
     EnrollLeadsRequest,
 )
 from services.campaign_runner import campaign_jobs, run_campaign_job, sync_campaign_enrollments
+from services.outreach_templates import lead_first_name, personalize_connection
+from store import Record
+from user_store import UserStore
 
 router = APIRouter()
 
 
-def _enrollment_to_response(enr: CampaignEnrollment, lead: Lead) -> dict:
+def _campaign_response(c: Record, enrollment_count: int = 0) -> CampaignResponse:
+    return CampaignResponse(
+        id=uuid.UUID(str(c.id)),
+        name=c.name,
+        connection_note_template=c.connection_note_template or "",
+        message_template=c.message_template or "",
+        wait_days_after_accept=c.wait_days_after_accept or 1,
+        is_active=c.is_active,
+        enrollment_count=enrollment_count,
+        created_at=c.created_at,
+        updated_at=c.updated_at,
+    )
+
+
+def _enrollment_to_response(enr: Record, lead: Optional[Record]) -> dict:
     return {
         "id": enr.id,
         "campaign_id": enr.campaign_id,
@@ -38,160 +52,98 @@ def _enrollment_to_response(enr: CampaignEnrollment, lead: Lead) -> dict:
         "company": lead.company if lead else None,
         "linkedin_url": lead.linkedin_url if lead else None,
         "lead_status": lead.status if lead else None,
+        "scheduled_at": enr.scheduled_at if getattr(enr, "scheduled_at", None) else None,
+        "origami_send_status": getattr(enr, "origami_send_status", None) or None,
     }
 
 
 @router.get("/", response_model=List[CampaignResponse])
-async def list_campaigns(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Campaign).order_by(Campaign.created_at.desc()))
-    campaigns = list(result.scalars().all())
+async def list_campaigns(db: UserStore = Depends(get_db)):
+    campaigns = await db.list_campaigns()
     out = []
     for c in campaigns:
-        cnt_r = await db.execute(
-            select(func.count()).select_from(CampaignEnrollment).where(
-                CampaignEnrollment.campaign_id == c.id
-            )
-        )
-        count = cnt_r.scalar() or 0
-        out.append(
-            CampaignResponse(
-                id=c.id,
-                name=c.name,
-                connection_note_template=c.connection_note_template or "",
-                message_template=c.message_template or "",
-                wait_days_after_accept=c.wait_days_after_accept or 1,
-                is_active=c.is_active,
-                enrollment_count=count,
-                created_at=c.created_at,
-                updated_at=c.updated_at,
-            )
-        )
+        count = await db.count_enrollments(c.id)
+        out.append(_campaign_response(c, count))
     return out
 
 
 @router.post("/", response_model=CampaignResponse)
-async def create_campaign(body: CampaignCreate, db: AsyncSession = Depends(get_db)):
-    c = Campaign(
-        id=uuid.uuid4(),
-        name=body.name,
-        connection_note_template=body.connection_note_template or "",
-        message_template=body.message_template or "",
-        wait_days_after_accept=body.wait_days_after_accept,
-        is_active=body.is_active,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+async def create_campaign(body: CampaignCreate, db: UserStore = Depends(get_db)):
+    now = datetime.utcnow().isoformat()
+    c = await db.insert(
+        "campaigns",
+        {
+            "id": str(uuid.uuid4()),
+            "name": body.name,
+            "connection_note_template": body.connection_note_template or "",
+            "message_template": body.message_template or "",
+            "wait_days_after_accept": body.wait_days_after_accept,
+            "is_active": body.is_active,
+            "created_at": now,
+            "updated_at": now,
+        },
     )
-    db.add(c)
-    await db.commit()
-    await db.refresh(c)
-    return CampaignResponse(
-        id=c.id,
-        name=c.name,
-        connection_note_template=c.connection_note_template or "",
-        message_template=c.message_template or "",
-        wait_days_after_accept=c.wait_days_after_accept or 1,
-        is_active=c.is_active,
-        enrollment_count=0,
-        created_at=c.created_at,
-        updated_at=c.updated_at,
-    )
+    return _campaign_response(c, 0)
 
 
 @router.get("/{campaign_id}", response_model=CampaignResponse)
-async def get_campaign(campaign_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
-    c = result.scalar_one_or_none()
+async def get_campaign(campaign_id: uuid.UUID, db: UserStore = Depends(get_db)):
+    c = await db.select_one("campaigns", campaign_id)
     if not c:
         raise HTTPException(404, "Campaign not found")
-    cnt_r = await db.execute(
-        select(func.count()).select_from(CampaignEnrollment).where(
-            CampaignEnrollment.campaign_id == c.id
-        )
-    )
-    return CampaignResponse(
-        id=c.id,
-        name=c.name,
-        connection_note_template=c.connection_note_template or "",
-        message_template=c.message_template or "",
-        wait_days_after_accept=c.wait_days_after_accept or 1,
-        is_active=c.is_active,
-        enrollment_count=cnt_r.scalar() or 0,
-        created_at=c.created_at,
-        updated_at=c.updated_at,
-    )
+    count = await db.count_enrollments(c.id)
+    return _campaign_response(c, count)
 
 
 @router.put("/{campaign_id}", response_model=CampaignResponse)
 async def update_campaign(
     campaign_id: uuid.UUID,
     body: CampaignUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: UserStore = Depends(get_db),
 ):
-    result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
-    c = result.scalar_one_or_none()
+    c = await db.select_one("campaigns", campaign_id)
     if not c:
         raise HTTPException(404, "Campaign not found")
-    for field, value in body.model_dump(exclude_unset=True).items():
-        setattr(c, field, value)
-    c.updated_at = datetime.utcnow()
 
-    # Propagate template updates to pending enrollments
+    patch = body.model_dump(exclude_unset=True)
+    patch["updated_at"] = datetime.utcnow().isoformat()
+    c = await db.update("campaigns", campaign_id, patch) or c
+
     if body.connection_note_template is not None or body.message_template is not None:
-        enr_r = await db.execute(
-            select(CampaignEnrollment).where(
-                CampaignEnrollment.campaign_id == c.id,
-                CampaignEnrollment.status.in_(["pending", "connection_sent", "accepted"]),
-            )
+        enrollments = await db.select_many(
+            "campaign_enrollments",
+            filters={"campaign_id": str(campaign_id)},
+            in_filters={"status": ["pending", "connection_sent", "accepted"]},
         )
-        for enr in enr_r.scalars().all():
+        for enr in enrollments:
+            lead = await db.select_one("leads", enr.lead_id)
+            if not lead:
+                continue
+            enr_patch: dict = {}
             if body.connection_note_template and enr.status == "pending":
-                lead_r = await db.execute(select(Lead).where(Lead.id == enr.lead_id))
-                lead = lead_r.scalar_one_or_none()
-                if lead:
-                    first = (lead.name or "there").split()[0]
-                    enr.connection_note = (
-                        body.connection_note_template.replace("{{first_name}}", first)
-                        .replace("{{company}}", lead.company or "your company")[:300]
-                    )
+                enr_patch["connection_note"] = personalize_connection(
+                    body.connection_note_template,
+                    first_name=lead_first_name(lead),
+                    company=lead.company or "",
+                    title=lead.title or "",
+                )
             if body.message_template and enr.status in ("pending", "connection_sent", "accepted"):
-                lead_r = await db.execute(select(Lead).where(Lead.id == enr.lead_id))
-                lead = lead_r.scalar_one_or_none()
-                if lead:
-                    first = (lead.name or "there").split()[0]
-                    enr.follow_up_message = (
-                        body.message_template.replace("{{first_name}}", first)
-                        .replace("{{company}}", lead.company or "your company")
-                    )
+                first = (lead.name or "there").split()[0]
+                enr_patch["follow_up_message"] = (
+                    body.message_template.replace("{{first_name}}", first)
+                    .replace("{{company}}", lead.company or "your company")
+                )
+            if enr_patch:
+                enr_patch["updated_at"] = datetime.utcnow().isoformat()
+                await db.update("campaign_enrollments", enr.id, enr_patch)
 
-    await db.commit()
-    await db.refresh(c)
-    cnt_r = await db.execute(
-        select(func.count()).select_from(CampaignEnrollment).where(
-            CampaignEnrollment.campaign_id == c.id
-        )
-    )
-    return CampaignResponse(
-        id=c.id,
-        name=c.name,
-        connection_note_template=c.connection_note_template or "",
-        message_template=c.message_template or "",
-        wait_days_after_accept=c.wait_days_after_accept or 1,
-        is_active=c.is_active,
-        enrollment_count=cnt_r.scalar() or 0,
-        created_at=c.created_at,
-        updated_at=c.updated_at,
-    )
+    count = await db.count_enrollments(c.id)
+    return _campaign_response(c, count)
 
 
 @router.get("/{campaign_id}/enrollments", response_model=List[CampaignEnrollmentResponse])
-async def list_enrollments(campaign_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(CampaignEnrollment, Lead)
-        .join(Lead, Lead.id == CampaignEnrollment.lead_id)
-        .where(CampaignEnrollment.campaign_id == campaign_id)
-        .order_by(CampaignEnrollment.updated_at.desc())
-    )
-    rows = result.all()
+async def list_enrollments(campaign_id: uuid.UUID, db: UserStore = Depends(get_db)):
+    rows = await db.list_enrollments_with_leads(campaign_id)
     return [_enrollment_to_response(enr, lead) for enr, lead in rows]
 
 
@@ -199,41 +151,32 @@ async def list_enrollments(campaign_id: uuid.UUID, db: AsyncSession = Depends(ge
 async def enroll_leads(
     campaign_id: uuid.UUID,
     body: EnrollLeadsRequest,
-    db: AsyncSession = Depends(get_db),
+    db: UserStore = Depends(get_db),
 ):
-    camp_r = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
-    campaign = camp_r.scalar_one_or_none()
+    campaign = await db.select_one("campaigns", campaign_id)
     if not campaign:
         raise HTTPException(404, "Campaign not found")
 
     if body.lead_ids:
-        leads_r = await db.execute(
-            select(Lead).where(Lead.id.in_(body.lead_ids))
-        )
+        leads = await db.get_leads_by_ids(body.lead_ids)
     else:
-        leads_r = await db.execute(
-            select(Lead).where(Lead.linkedin_url.isnot(None))
-        )
-    leads = list(leads_r.scalars().all())
+        leads = await db.list_leads_with_linkedin()
 
-    existing_r = await db.execute(
-        select(CampaignEnrollment.lead_id).where(
-            CampaignEnrollment.campaign_id == campaign_id
-        )
-    )
-    existing_ids = {row[0] for row in existing_r.all()}
+    existing_ids = await db.enrollment_lead_ids(campaign_id)
 
     added = 0
+    now = datetime.utcnow().isoformat()
     for lead in leads:
-        if lead.id in existing_ids:
+        if str(lead.id) in existing_ids:
             continue
         note = ""
         msg = ""
         if campaign.connection_note_template:
-            first = (lead.name or "there").split()[0]
-            note = (
-                campaign.connection_note_template.replace("{{first_name}}", first)
-                .replace("{{company}}", lead.company or "your company")[:300]
+            note = personalize_connection(
+                campaign.connection_note_template,
+                first_name=lead_first_name(lead),
+                company=lead.company or "",
+                title=lead.title or "",
             )
         if campaign.message_template:
             first = (lead.name or "there").split()[0]
@@ -241,19 +184,21 @@ async def enroll_leads(
                 campaign.message_template.replace("{{first_name}}", first)
                 .replace("{{company}}", lead.company or "your company")
             )
-        db.add(
-            CampaignEnrollment(
-                id=uuid.uuid4(),
-                campaign_id=campaign_id,
-                lead_id=lead.id,
-                status="pending",
-                connection_note=note or None,
-                follow_up_message=msg or None,
-            )
+        await db.insert(
+            "campaign_enrollments",
+            {
+                "id": str(uuid.uuid4()),
+                "campaign_id": str(campaign_id),
+                "lead_id": str(lead.id),
+                "status": "pending",
+                "connection_note": note or None,
+                "follow_up_message": msg or None,
+                "created_at": now,
+                "updated_at": now,
+            },
         )
         added += 1
 
-    await db.commit()
     return {"enrolled": added, "total_leads": len(leads)}
 
 
@@ -297,19 +242,23 @@ async def sync_campaign(campaign_id: uuid.UUID, background_tasks: BackgroundTask
 async def stop_enrollment(
     campaign_id: uuid.UUID,
     enrollment_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
+    db: UserStore = Depends(get_db),
 ):
-    result = await db.execute(
-        select(CampaignEnrollment).where(
-            CampaignEnrollment.id == enrollment_id,
-            CampaignEnrollment.campaign_id == campaign_id,
-        )
+    rows = await db.select_many(
+        "campaign_enrollments",
+        filters={"id": str(enrollment_id), "campaign_id": str(campaign_id)},
+        limit=1,
     )
-    enr = result.scalar_one_or_none()
+    enr = rows[0] if rows else None
     if not enr:
         raise HTTPException(404, "Enrollment not found")
-    enr.status = "stopped"
-    enr.stopped_reason = "Stopped manually"
-    enr.updated_at = datetime.utcnow()
-    await db.commit()
+    await db.update(
+        "campaign_enrollments",
+        enrollment_id,
+        {
+            "status": "stopped",
+            "stopped_reason": "Stopped manually",
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+    )
     return {"status": "stopped"}

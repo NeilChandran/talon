@@ -3,27 +3,18 @@ import os
 import re
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from models import (
-    AgentChatMessage,
-    Campaign,
-    CampaignEnrollment,
-    Lead,
-    Workspace,
-    WorkspaceList,
-    WorkspaceListLead,
-)
 from services.campaign_runner import campaign_jobs, run_campaign_job
 from services.claude_service import workspace_agent_chat
 from services.linkedin_service import load_session
 from services.list_builder import build_jobs, run_list_build
+from store import Record
+from user_store import UserStore
 
 router = APIRouter()
 
@@ -33,7 +24,6 @@ def _dispatch_list_build(
     prompt: str,
     background_tasks: BackgroundTasks,
 ) -> None:
-    """Prefer Celery+Redis when available; else FastAPI background task."""
     if os.getenv("REDIS_URL"):
         try:
             from tasks import build_workspace_list
@@ -71,7 +61,7 @@ def _list_name_from_prompt(prompt: str) -> str:
     return s if len(s) <= 50 else s[:47] + "..."
 
 
-def _row_dict(r: WorkspaceListLead, lead: Lead | None = None) -> dict:
+def _row_dict(r: Record, lead: Optional[Record] = None) -> dict:
     extra = r.extra or {}
     email = (lead.email if lead else "") or extra.get("email", "")
     return {
@@ -88,14 +78,14 @@ def _row_dict(r: WorkspaceListLead, lead: Lead | None = None) -> dict:
     }
 
 
-def _ws_dict(ws: Workspace, list_count: int = 0) -> dict:
+def _ws_dict(ws: Record, list_count: int = 0) -> dict:
     return {
         "id": str(ws.id),
         "name": ws.name,
         "icon_letter": ws.icon_letter or "T",
         "list_count": list_count,
-        "created_at": ws.created_at.isoformat() if ws.created_at else None,
-        "updated_at": ws.updated_at.isoformat() if ws.updated_at else None,
+        "created_at": ws.created_at,
+        "updated_at": ws.updated_at,
     }
 
 
@@ -125,66 +115,67 @@ class LaunchFromListBody(BaseModel):
 
 
 @router.get("/")
-async def list_workspaces(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Workspace).order_by(Workspace.updated_at.desc()))
-    workspaces = list(result.scalars().all())
+async def list_workspaces(db: UserStore = Depends(get_db)):
+    workspaces = await db.list_workspaces()
     out = []
     for ws in workspaces:
-        cnt = await db.execute(
-            select(func.count()).select_from(WorkspaceList).where(WorkspaceList.workspace_id == ws.id)
-        )
-        out.append(_ws_dict(ws, cnt.scalar() or 0))
+        cnt = await db.count_workspace_lists(ws.id)
+        out.append(_ws_dict(ws, cnt))
     return out
 
 
 @router.post("/")
-async def create_workspace(body: CreateWorkspaceBody, db: AsyncSession = Depends(get_db)):
+async def create_workspace(body: CreateWorkspaceBody, db: UserStore = Depends(get_db)):
     letter = (body.name.strip()[:1] or "T").upper()
-    ws = Workspace(
-        id=uuid.uuid4(),
-        name=body.name.strip(),
-        icon_letter=letter,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+    now = datetime.utcnow().isoformat()
+    ws = await db.insert(
+        "workspaces",
+        {
+            "id": str(uuid.uuid4()),
+            "name": body.name.strip(),
+            "icon_letter": letter,
+            "created_at": now,
+            "updated_at": now,
+        },
     )
-    db.add(ws)
-    await db.commit()
-    await db.refresh(ws)
     return _ws_dict(ws, 0)
 
 
 @router.post("/quick-start")
-async def quick_start(body: QuickStartBody, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
-    """Origami home: one prompt → workspace + list + background build."""
+async def quick_start(body: QuickStartBody, background_tasks: BackgroundTasks, db: UserStore = Depends(get_db)):
     prompt = body.prompt.strip()
     if not prompt:
         raise HTTPException(400, "Prompt required")
 
     name = _workspace_name_from_prompt(prompt)
     letter = name[0].upper() if name else "T"
-    ws = Workspace(
-        id=uuid.uuid4(),
-        name=name,
-        icon_letter=letter,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+    now = datetime.utcnow().isoformat()
+    ws = await db.insert(
+        "workspaces",
+        {
+            "id": str(uuid.uuid4()),
+            "name": name,
+            "icon_letter": letter,
+            "created_at": now,
+            "updated_at": now,
+        },
     )
-    db.add(ws)
 
-    lst = WorkspaceList(
-        id=uuid.uuid4(),
-        workspace_id=ws.id,
-        name=_list_name_from_prompt(prompt),
-        icp_prompt=prompt,
-        status="building",
-        build_step="Starting...",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+    lst = await db.insert(
+        "workspace_lists",
+        {
+            "id": str(uuid.uuid4()),
+            "workspace_id": str(ws.id),
+            "name": _list_name_from_prompt(prompt),
+            "icp_prompt": prompt,
+            "status": "building",
+            "build_step": "Starting...",
+            "created_at": now,
+            "updated_at": now,
+        },
     )
-    db.add(lst)
-    await db.commit()
 
-    _dispatch_list_build(lst.id, prompt, background_tasks)
+    _dispatch_list_build(uuid.UUID(str(lst.id)), prompt, background_tasks)
 
     return {
         "workspace": _ws_dict(ws, 1),
@@ -201,20 +192,15 @@ async def quick_start(body: QuickStartBody, background_tasks: BackgroundTasks, d
 
 
 @router.get("/{workspace_id}")
-async def get_workspace(workspace_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    wr = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
-    ws = wr.scalar_one_or_none()
+async def get_workspace(workspace_id: uuid.UUID, db: UserStore = Depends(get_db)):
+    ws = await db.select_one("workspaces", workspace_id)
     if not ws:
         raise HTTPException(404, "Workspace not found")
 
-    lr = await db.execute(
-        select(WorkspaceList).where(WorkspaceList.workspace_id == workspace_id).order_by(
-            WorkspaceList.updated_at.desc()
-        )
-    )
-    lists = []
-    for lst in lr.scalars().all():
-        lists.append(
+    lists = await db.list_workspace_lists(workspace_id)
+    list_out = []
+    for lst in lists:
+        list_out.append(
             {
                 "id": str(lst.id),
                 "name": lst.name,
@@ -222,37 +208,25 @@ async def get_workspace(workspace_id: uuid.UUID, db: AsyncSession = Depends(get_
                 "build_step": lst.build_step,
                 "row_count": lst.row_count or 0,
                 "icp_prompt": lst.icp_prompt or "",
-                "updated_at": lst.updated_at.isoformat() if lst.updated_at else None,
+                "updated_at": lst.updated_at,
             }
         )
 
-    return {**_ws_dict(ws, len(lists)), "lists": lists}
+    return {**_ws_dict(ws, len(list_out)), "lists": list_out}
 
 
 @router.get("/{workspace_id}/lists/{list_id}")
 async def get_list(
     workspace_id: uuid.UUID,
     list_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
+    db: UserStore = Depends(get_db),
 ):
-    lr = await db.execute(
-        select(WorkspaceList).where(
-            WorkspaceList.id == list_id,
-            WorkspaceList.workspace_id == workspace_id,
-        )
-    )
-    lst = lr.scalar_one_or_none()
+    lst = await db.get_workspace_list(list_id, workspace_id)
     if not lst:
         raise HTTPException(404, "List not found")
 
-    rr = await db.execute(
-        select(WorkspaceListLead, Lead)
-        .outerjoin(Lead, Lead.id == WorkspaceListLead.lead_id)
-        .where(WorkspaceListLead.list_id == list_id)
-        .order_by(WorkspaceListLead.sort_order.asc())
-    )
-    rows = [_row_dict(wl, lead) for wl, lead in rr.all()]
-
+    pairs = await db.list_workspace_list_leads_joined(list_id)
+    rows = [_row_dict(wl, lead) for wl, lead in pairs]
     job = build_jobs.get(str(list_id), {})
 
     return {
@@ -274,33 +248,33 @@ async def create_list(
     workspace_id: uuid.UUID,
     body: CreateListBody,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
+    db: UserStore = Depends(get_db),
 ):
-    wr = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
-    if not wr.scalar_one_or_none():
+    ws = await db.select_one("workspaces", workspace_id)
+    if not ws:
         raise HTTPException(404, "Workspace not found")
 
     prompt = body.prompt.strip()
     if not prompt:
         raise HTTPException(400, "Prompt required")
 
-    lst = WorkspaceList(
-        id=uuid.uuid4(),
-        workspace_id=workspace_id,
-        name=body.name or _list_name_from_prompt(prompt),
-        icp_prompt=prompt,
-        status="building",
-        build_step="Starting...",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+    now = datetime.utcnow().isoformat()
+    lst = await db.insert(
+        "workspace_lists",
+        {
+            "id": str(uuid.uuid4()),
+            "workspace_id": str(workspace_id),
+            "name": body.name or _list_name_from_prompt(prompt),
+            "icp_prompt": prompt,
+            "status": "building",
+            "build_step": "Starting...",
+            "created_at": now,
+            "updated_at": now,
+        },
     )
-    db.add(lst)
-    ws = await db.get(Workspace, workspace_id)
-    if ws:
-        ws.updated_at = datetime.utcnow()
-    await db.commit()
+    await db.update("workspaces", workspace_id, {"updated_at": now})
 
-    _dispatch_list_build(lst.id, prompt, background_tasks)
+    _dispatch_list_build(uuid.UUID(str(lst.id)), prompt, background_tasks)
 
     return {
         "id": str(lst.id),
@@ -310,14 +284,8 @@ async def create_list(
 
 
 @router.get("/{workspace_id}/lists/{list_id}/build-status")
-async def list_build_status(workspace_id: uuid.UUID, list_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    lr = await db.execute(
-        select(WorkspaceList).where(
-            WorkspaceList.id == list_id,
-            WorkspaceList.workspace_id == workspace_id,
-        )
-    )
-    lst = lr.scalar_one_or_none()
+async def list_build_status(workspace_id: uuid.UUID, list_id: uuid.UUID, db: UserStore = Depends(get_db)):
+    lst = await db.get_workspace_list(list_id, workspace_id)
     if not lst:
         raise HTTPException(404, "List not found")
     job = build_jobs.get(str(list_id), {})
@@ -333,55 +301,41 @@ async def list_build_status(workspace_id: uuid.UUID, list_id: uuid.UUID, db: Asy
 async def workspace_chat(
     workspace_id: uuid.UUID,
     body: WorkspaceChatBody,
-    db: AsyncSession = Depends(get_db),
+    db: UserStore = Depends(get_db),
 ):
-    wr = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
-    ws = wr.scalar_one_or_none()
+    ws = await db.select_one("workspaces", workspace_id)
     if not ws:
         raise HTTPException(404, "Workspace not found")
 
     active_list = None
     rows_sample: List[dict] = []
     if body.list_id:
-        lr = await db.execute(
-            select(WorkspaceList).where(
-                WorkspaceList.id == body.list_id,
-                WorkspaceList.workspace_id == workspace_id,
-            )
-        )
-        active_list = lr.scalar_one_or_none()
+        active_list = await db.get_workspace_list(body.list_id, workspace_id)
         if active_list:
-            rr = await db.execute(
-                select(WorkspaceListLead, Lead)
-                .outerjoin(Lead, Lead.id == WorkspaceListLead.lead_id)
-                .where(WorkspaceListLead.list_id == body.list_id)
-                .order_by(WorkspaceListLead.sort_order.asc())
-                .limit(8)
-            )
-            rows_sample = [_row_dict(wl, lead) for wl, lead in rr.all()]
+            pairs = await db.list_workspace_list_leads_joined(body.list_id)
+            rows_sample = [_row_dict(wl, lead) for wl, lead in pairs[:8]]
 
-    hist_q = (
-        select(AgentChatMessage)
-        .where(AgentChatMessage.workspace_id == workspace_id)
-        .order_by(AgentChatMessage.created_at.desc())
-        .limit(12)
+    hist = await db.list_agent_messages(
+        workspace_id=workspace_id,
+        list_id=body.list_id,
+        order="created_at",
+        desc=True,
+        limit=12,
     )
-    if body.list_id:
-        hist_q = hist_q.where(AgentChatMessage.list_id == body.list_id)
-    hist_r = await db.execute(hist_q)
-    history = [{"role": m.role, "content": m.content} for m in reversed(list(hist_r.scalars().all()))]
+    history = [{"role": m.role, "content": m.content} for m in reversed(hist)]
 
-    db.add(
-        AgentChatMessage(
-            id=uuid.uuid4(),
-            workspace_id=workspace_id,
-            list_id=body.list_id,
-            role="user",
-            content=body.message,
-            created_at=datetime.utcnow(),
-        )
+    now = datetime.utcnow().isoformat()
+    await db.insert(
+        "agent_chat_messages",
+        {
+            "id": str(uuid.uuid4()),
+            "workspace_id": str(workspace_id),
+            "list_id": str(body.list_id) if body.list_id else None,
+            "role": "user",
+            "content": body.message,
+            "created_at": now,
+        },
     )
-    await db.commit()
 
     result = await workspace_agent_chat(
         body.message,
@@ -414,18 +368,18 @@ async def workspace_chat(
         if isinstance(a, dict)
     ]
 
-    db.add(
-        AgentChatMessage(
-            id=uuid.uuid4(),
-            workspace_id=workspace_id,
-            list_id=body.list_id,
-            role="assistant",
-            content=reply_text,
-            suggested_actions=[a["label"] for a in suggested],
-            created_at=datetime.utcnow(),
-        )
+    await db.insert(
+        "agent_chat_messages",
+        {
+            "id": str(uuid.uuid4()),
+            "workspace_id": str(workspace_id),
+            "list_id": str(body.list_id) if body.list_id else None,
+            "role": "assistant",
+            "content": reply_text,
+            "suggested_actions": [a["label"] for a in suggested],
+            "created_at": now,
+        },
     )
-    await db.commit()
 
     return {
         "reply": reply_text,
@@ -439,25 +393,23 @@ async def workspace_chat(
 async def workspace_agent_history(
     workspace_id: uuid.UUID,
     list_id: Optional[uuid.UUID] = None,
-    db: AsyncSession = Depends(get_db),
+    db: UserStore = Depends(get_db),
 ):
-    q = (
-        select(AgentChatMessage)
-        .where(AgentChatMessage.workspace_id == workspace_id)
-        .order_by(AgentChatMessage.created_at.asc())
+    messages = await db.list_agent_messages(
+        workspace_id=workspace_id,
+        list_id=list_id,
+        order="created_at",
+        desc=False,
     )
-    if list_id:
-        q = q.where(AgentChatMessage.list_id == list_id)
-    result = await db.execute(q)
     return [
         {
             "id": str(m.id),
             "role": m.role,
             "content": m.content,
             "suggested_actions": m.suggested_actions or [],
-            "created_at": m.created_at.isoformat() if m.created_at else None,
+            "created_at": m.created_at,
         }
-        for m in result.scalars().all()
+        for m in messages
     ]
 
 
@@ -467,87 +419,93 @@ async def launch_from_list(
     list_id: uuid.UUID,
     body: LaunchFromListBody,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
+    db: UserStore = Depends(get_db),
 ):
-    """Create campaign from list, enroll all leads, start LinkedIn sequences."""
-    lr = await db.execute(
-        select(WorkspaceList).where(
-            WorkspaceList.id == list_id,
-            WorkspaceList.workspace_id == workspace_id,
-        )
-    )
-    lst = lr.scalar_one_or_none()
+    lst = await db.get_workspace_list(list_id, workspace_id)
     if not lst:
         raise HTTPException(404, "List not found")
 
-    wr = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
-    ws = wr.scalar_one_or_none()
-
-    rr = await db.execute(select(WorkspaceListLead).where(WorkspaceListLead.list_id == list_id))
-    list_rows = list(rr.scalars().all())
+    ws = await db.select_one("workspaces", workspace_id)
+    list_rows = await db.list_workspace_list_leads(list_id)
     if not list_rows:
         raise HTTPException(400, "List has no leads yet")
 
     conn_tpl = body.connection_note_template or DEFAULT_CONNECTION
     msg_tpl = body.message_template or DEFAULT_FOLLOWUP
     camp_name = body.campaign_name or f"{lst.name} — LinkedIn Outreach"
+    now = datetime.utcnow().isoformat()
 
-    campaign = Campaign(
-        id=uuid.uuid4(),
-        workspace_id=workspace_id,
-        list_id=list_id,
-        name=camp_name,
-        connection_note_template=conn_tpl[:300],
-        message_template=msg_tpl,
-        wait_days_after_accept=body.wait_days_after_accept,
-        is_active=True,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+    campaign = await db.insert(
+        "campaigns",
+        {
+            "id": str(uuid.uuid4()),
+            "workspace_id": str(workspace_id),
+            "list_id": str(list_id),
+            "name": camp_name,
+            "connection_note_template": conn_tpl[:300],
+            "message_template": msg_tpl,
+            "wait_days_after_accept": body.wait_days_after_accept,
+            "is_active": True,
+            "created_at": now,
+            "updated_at": now,
+        },
     )
-    db.add(campaign)
 
     enrolled = 0
     for row in list_rows:
         lead_id = row.lead_id
         if not lead_id:
-            lead = Lead(
-                id=uuid.uuid4(),
-                name=f"{row.first_name} {row.last_name}".strip(),
-                title=row.title,
-                company=row.company,
-                linkedin_url=row.linkedin_url,
-                icp_score=row.icp_score,
+            lead_id = str(uuid.uuid4())
+            name = f"{row.first_name} {row.last_name}".strip()
+            await db.insert(
+                "leads",
+                {
+                    "id": lead_id,
+                    "name": name,
+                    "title": row.title,
+                    "company": row.company,
+                    "linkedin_url": row.linkedin_url,
+                    "icp_score": row.icp_score,
+                    "created_at": now,
+                    "updated_at": now,
+                },
             )
-            db.add(lead)
-            row.lead_id = lead.id
-            lead_id = lead.id
+            await db.update(
+                "workspace_list_leads",
+                row.id,
+                {"lead_id": lead_id},
+            )
         else:
-            lead_r = await db.execute(select(Lead).where(Lead.id == lead_id))
-            lead = lead_r.scalar_one_or_none()
+            lead = await db.select_one("leads", lead_id)
             if not lead:
                 continue
 
-        first = row.first_name or (lead.name or "there").split()[0]
-        note = (
-            conn_tpl.replace("{{first_name}}", first).replace("{{company}}", row.company or "your company")[:300]
-        )
+        first = row.first_name or "there"
+        if lead_id:
+            lead = await db.select_one("leads", lead_id)
+            if lead and lead.name:
+                first = row.first_name or (lead.name or "there").split()[0]
+
+        note = conn_tpl.replace("{{first_name}}", first).replace("{{company}}", row.company or "your company")[:300]
         msg = msg_tpl.replace("{{first_name}}", first).replace("{{company}}", row.company or "your company")
 
-        db.add(
-            CampaignEnrollment(
-                id=uuid.uuid4(),
-                campaign_id=campaign.id,
-                lead_id=lead_id,
-                status="pending",
-                connection_note=note,
-                follow_up_message=msg,
-            )
+        await db.insert(
+            "campaign_enrollments",
+            {
+                "id": str(uuid.uuid4()),
+                "campaign_id": str(campaign.id),
+                "lead_id": str(lead_id),
+                "status": "pending",
+                "connection_note": note,
+                "follow_up_message": msg,
+                "created_at": now,
+                "updated_at": now,
+            },
         )
         enrolled += 1
 
     if ws:
-        ws.updated_at = datetime.utcnow()
-    await db.commit()
+        await db.update("workspaces", workspace_id, {"updated_at": now})
 
     job_id = str(uuid.uuid4())
     campaign_jobs[job_id] = {

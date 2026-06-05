@@ -146,6 +146,7 @@ export interface ReplyCheckResult {
 // ─── Campaign workspace (origami-style) ───────────────────────────────────────
 
 export type EnrollmentStatus =
+  | "drafted"
   | "pending"
   | "connection_sent"
   | "accepted"
@@ -184,6 +185,8 @@ export interface CampaignEnrollment {
   company: string | null;
   linkedin_url: string | null;
   lead_status: LeadStatus | null;
+  scheduled_at?: string | null;
+  origami_send_status?: string | null;
 }
 
 export interface SuggestedAction {
@@ -272,6 +275,8 @@ export interface WorkspaceChatResponse {
 
 export interface AppSettings {
   instantly_campaign_id: string;
+  linkedin_connection_template?: string;
+  linkedin_follow_up_template?: string;
   dry_run: boolean;
   has_serper: boolean;
   has_proxycurl: boolean;

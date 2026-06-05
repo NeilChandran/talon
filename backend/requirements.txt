@@ -1,7 +1,6 @@
 fastapi==0.115.4
 uvicorn[standard]==0.32.1
-sqlalchemy[asyncio]==2.0.36
-asyncpg==0.30.0
+supabase>=2.31.0
 pydantic==2.10.3
 pydantic-settings==2.7.0
 python-dotenv==1.0.1
@@ -12,3 +11,5 @@ python-multipart==0.0.20
 aiohttp==3.11.11
 greenlet==3.1.1
 websockets==14.1
+celery==5.4.0
+redis==5.2.1

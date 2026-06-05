@@ -3,35 +3,64 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc, func, or_, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from models import EmailSent, Lead
 from schemas import LeadCreate, LeadResponse, LeadUpdate, StatsResponse
+from user_store import UserStore
 
 router = APIRouter()
 
 
+def _to_response(r) -> LeadResponse:
+    return LeadResponse(
+        id=uuid.UUID(str(r.id)),
+        name=r.name,
+        title=r.title,
+        company=r.company,
+        company_size=r.company_size,
+        email=r.email,
+        linkedin_url=r.linkedin_url,
+        linkedin_profile_id=r.linkedin_profile_id,
+        linkedin_member_id=r.linkedin_member_id,
+        icp_score=r.icp_score or r.score or 5,
+        score_reason=r.score_reason,
+        source_url=r.source_url or "",
+        tech_stack=r.tech_stack or [],
+        status=r.status or "new",
+        created_at=r.created_at,
+        updated_at=r.updated_at,
+    )
+
+
+async def _count_replied_emails(store) -> int:
+    """Supabase or SQLite — avoid calling Supabase client on local DB."""
+    if hasattr(store, "_client"):
+        def _replied_count():
+            return (
+                store._client.table("emails_sent")
+                .select("*", count="exact", head=True)
+                .eq("replied", True)
+                .execute()
+                .count
+                or 0
+            )
+
+        return await store._run(_replied_count)
+    try:
+        return await store.count("emails_sent", filters={"replied": 1})
+    except Exception:
+        return 0
+
+
 @router.get("/stats", response_model=StatsResponse)
-async def get_stats(db: AsyncSession = Depends(get_db)):
-    total_result = await db.execute(select(func.count(Lead.id)))
-    total_leads = total_result.scalar() or 0
-
-    emails_result = await db.execute(select(func.count(EmailSent.id)))
-    emails_sent = emails_result.scalar() or 0
-
-    replied_result = await db.execute(
-        select(func.count(EmailSent.id)).where(EmailSent.replied == True)
-    )
-    replied = replied_result.scalar() or 0
+async def get_stats(db: UserStore = Depends(get_db)):
+    lead_filters = {"user_id": db.user_id} if db.user_id else None
+    total_leads = await db.raw.count("leads", filters=lead_filters)
+    emails_sent = await db.raw.count("emails_sent")
+    replied = await _count_replied_emails(db.raw)
     reply_rate = round((replied / emails_sent * 100), 1) if emails_sent > 0 else 0.0
-
-    week_ago = datetime.utcnow() - timedelta(days=7)
-    week_result = await db.execute(
-        select(func.count(Lead.id)).where(Lead.created_at >= week_ago)
-    )
-    leads_this_week = week_result.scalar() or 0
+    week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    leads_this_week = await db.count_leads_since(week_ago)
 
     return StatsResponse(
         total_leads=total_leads,
@@ -42,28 +71,14 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/recent", response_model=List[LeadResponse])
-async def get_recent_leads(limit: int = 10, db: AsyncSession = Depends(get_db)):
-    """Return status='new' leads that have a LinkedIn URL (real prospects, not AI-generated)."""
-    result = await db.execute(
-        select(Lead)
-        .where(Lead.status == "new")
-        .where(Lead.linkedin_url.isnot(None))
-        .order_by(desc(Lead.created_at))
-        .limit(limit)
-    )
-    return result.scalars().all()
+async def get_recent_leads(limit: int = 10, db: UserStore = Depends(get_db)):
+    rows = await db.filter_leads(status="new", limit=limit)
+    return [_to_response(r) for r in rows if r.linkedin_url]
 
 
 @router.delete("/")
-async def delete_all_leads(db: AsyncSession = Depends(get_db)):
-    """Delete every lead in the database — used to reset the pipeline."""
-    from sqlalchemy import delete as sa_delete
-    from models import LinkedInOutreachLog, EmailSent
-    # Delete dependent rows first
-    await db.execute(sa_delete(LinkedInOutreachLog))
-    await db.execute(sa_delete(EmailSent))
-    await db.execute(sa_delete(Lead))
-    await db.commit()
+async def delete_all_leads(db: UserStore = Depends(get_db)):
+    await db.purge_all_leads()
     return {"message": "All leads deleted"}
 
 
@@ -77,79 +92,51 @@ async def get_leads(
     sort_order: str = "desc",
     limit: int = Query(200, le=500),
     offset: int = 0,
-    db: AsyncSession = Depends(get_db),
+    db: UserStore = Depends(get_db),
 ):
-    query = select(Lead)
-
-    if status:
-        query = query.where(Lead.status == status)
-    if min_score is not None:
-        query = query.where(Lead.icp_score >= min_score)
-    if max_score is not None:
-        query = query.where(Lead.icp_score <= max_score)
-    if search:
-        query = query.where(
-            or_(
-                Lead.name.ilike(f"%{search}%"),
-                Lead.company.ilike(f"%{search}%"),
-                Lead.email.ilike(f"%{search}%"),
-            )
-        )
-
-    valid_columns = {"created_at", "name", "company", "icp_score", "status"}
-    sort_col = sort_by if sort_by in valid_columns else "created_at"
-    col = getattr(Lead, sort_col)
-    query = query.order_by(desc(col) if sort_order == "desc" else col)
-    query = query.limit(limit).offset(offset)
-
-    result = await db.execute(query)
-    return result.scalars().all()
+    rows = await db.filter_leads(
+        status=status,
+        min_score=min_score,
+        max_score=max_score,
+        search=search,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
+        offset=offset,
+    )
+    return [_to_response(r) for r in rows]
 
 
 @router.get("/{lead_id}", response_model=LeadResponse)
-async def get_lead(lead_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Lead).where(Lead.id == lead_id))
-    lead = result.scalar_one_or_none()
+async def get_lead(lead_id: uuid.UUID, db: UserStore = Depends(get_db)):
+    lead = await db.get_lead(lead_id)
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
-    return lead
+    return _to_response(lead)
 
 
 @router.post("/", response_model=LeadResponse)
-async def create_lead(lead: LeadCreate, db: AsyncSession = Depends(get_db)):
-    db_lead = Lead(**lead.model_dump())
-    db.add(db_lead)
-    await db.commit()
-    await db.refresh(db_lead)
-    return db_lead
+async def create_lead(lead: LeadCreate, db: UserStore = Depends(get_db)):
+    row = await db.insert_lead({"id": str(uuid.uuid4()), **lead.model_dump()})
+    return _to_response(row)
 
 
 @router.put("/{lead_id}", response_model=LeadResponse)
 async def update_lead(
     lead_id: uuid.UUID,
     lead_update: LeadUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: UserStore = Depends(get_db),
 ):
-    result = await db.execute(select(Lead).where(Lead.id == lead_id))
-    lead = result.scalar_one_or_none()
-    if not lead:
+    patch = lead_update.model_dump(exclude_unset=True)
+    patch["updated_at"] = datetime.utcnow().isoformat()
+    row = await db.update("leads", lead_id, patch)
+    if not row:
         raise HTTPException(status_code=404, detail="Lead not found")
-
-    for field, value in lead_update.model_dump(exclude_unset=True).items():
-        setattr(lead, field, value)
-    lead.updated_at = datetime.utcnow()
-
-    await db.commit()
-    await db.refresh(lead)
-    return lead
+    return _to_response(row)
 
 
 @router.delete("/{lead_id}")
-async def delete_lead(lead_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Lead).where(Lead.id == lead_id))
-    lead = result.scalar_one_or_none()
-    if not lead:
+async def delete_lead(lead_id: uuid.UUID, db: UserStore = Depends(get_db)):
+    if not await db.delete_lead(lead_id):
         raise HTTPException(status_code=404, detail="Lead not found")
-    await db.delete(lead)
-    await db.commit()
     return {"message": "Lead deleted"}

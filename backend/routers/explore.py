@@ -1,18 +1,14 @@
 """Origami-style explore API: ICP prompt → parallel scrapers → table."""
-import asyncio
 import csv
 import io
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import AsyncSessionLocal, get_db
-from models import ExploreChatMessage, ExploreRow, ExploreSession
+from database import get_db
 from schemas import (
     ExploreEnrichRequest,
     ExploreFilterRule,
@@ -24,17 +20,18 @@ from schemas import (
 )
 from services.explore.enrichment import enrich_cell
 from services.explore.icp_parser import parse_icp_prompt
-from services.explore.orchestrator import get_job_state, run_explore_pipeline
+from services.explore.orchestrator import get_job_state, run_explore_pipeline, _persist_rows
 from services.explore.refinement import parse_refinement
 from services.explore.scoring import apply_filter_rules, score_row
 from services.explore.scrapers.claude_companies import generate_companies_for_source
 from services.explore.scrapers.base import dedupe_rows
-from services.explore.orchestrator import _persist_rows  # noqa: F401 — used in refine
+from store import Record
+from user_store import UserStore, get_store
 
 router = APIRouter()
 
 
-def _row_dict(row: ExploreRow) -> dict:
+def _row_dict(row: Record) -> dict:
     return {
         "company_name": row.company_name,
         "website": row.website,
@@ -46,40 +43,50 @@ def _row_dict(row: ExploreRow) -> dict:
     }
 
 
-async def _session_response(db: AsyncSession, session: ExploreSession) -> dict:
-    rows_r = await db.execute(
-        select(ExploreRow)
-        .where(ExploreRow.session_id == session.id)
-        .order_by(ExploreRow.fit_score.desc(), ExploreRow.created_at)
-    )
-    rows = list(rows_r.scalars().all())
-    rules = session.filter_rules or []
-    visible = []
-    for row in rows:
-        d = ExploreRowResponse.model_validate(row).model_dump()
+def _explore_row_response(row: Record, rules: list, hidden_override: bool = None) -> dict:
+    d = ExploreRowResponse.model_validate({
+        "id": row.id,
+        "session_id": row.session_id,
+        "company_name": row.company_name,
+        "website": row.website,
+        "industry": row.industry,
+        "headcount": row.headcount,
+        "location": row.location,
+        "source": row.source,
+        "raw_data": row.raw_data or {},
+        "fit_score": row.fit_score or 0,
+        "enrichment": row.enrichment or {},
+        "hidden": row.hidden or False,
+        "created_at": row.created_at,
+    }).model_dump()
+    if hidden_override is not None:
+        d["hidden"] = hidden_override
+    else:
         d["hidden"] = row.hidden or not apply_filter_rules(_row_dict(row), rules)
-        visible.append(d)
+    return d
 
-    msg_r = await db.execute(
-        select(ExploreChatMessage)
-        .where(ExploreChatMessage.session_id == session.id)
-        .order_by(ExploreChatMessage.created_at)
-    )
+
+async def _session_response(db: SupabaseStore, session: Record) -> dict:
+    rows = await db.list_explore_rows(session.id, order="fit_score", desc=True)
+    rules = session.filter_rules or []
+    visible = [_explore_row_response(row, rules) for row in rows]
+
+    messages_raw = await db.list_explore_messages(session.id)
     messages = [
         {
             "id": str(m.id),
             "role": m.role,
             "content": m.content,
             "meta": m.meta or {},
-            "created_at": m.created_at.isoformat() if m.created_at else None,
+            "created_at": m.created_at,
         }
-        for m in msg_r.scalars().all()
+        for m in messages_raw
     ]
 
     scraper_status = session.scraper_status or get_job_state(str(session.id)).get("scrapers", {})
 
     return {
-        "id": session.id,
+        "id": uuid.UUID(str(session.id)),
         "icp_prompt": session.icp_prompt,
         "parsed_icp": session.parsed_icp or {},
         "status": session.status,
@@ -93,30 +100,33 @@ async def _session_response(db: AsyncSession, session: ExploreSession) -> dict:
 
 
 @router.post("/sessions", response_model=ExploreSessionResponse)
-async def create_session(body: ExploreSessionCreate, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+async def create_session(body: ExploreSessionCreate, background_tasks: BackgroundTasks, db: UserStore = Depends(get_db)):
     prompt = body.icp_prompt.strip()
     if not prompt:
         raise HTTPException(400, "ICP prompt is required")
 
     parsed = await parse_icp_prompt(prompt)
-    session = ExploreSession(
-        id=uuid.uuid4(),
-        icp_prompt=prompt,
-        parsed_icp=parsed,
-        status="running",
-        scraper_status={},
-        filter_rules=[],
-        enrichment_columns=[],
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+    now = datetime.utcnow().isoformat()
+    session = await db.insert(
+        "explore_sessions",
+        {
+            "id": str(uuid.uuid4()),
+            "icp_prompt": prompt,
+            "parsed_icp": parsed,
+            "status": "running",
+            "scraper_status": {},
+            "filter_rules": [],
+            "enrichment_columns": [],
+            "created_at": now,
+            "updated_at": now,
+        },
     )
-    db.add(session)
-    await db.commit()
-    await db.refresh(session)
+
+    sid = uuid.UUID(str(session.id))
 
     async def _run():
-        async with AsyncSessionLocal() as bg_db:
-            await run_explore_pipeline(session.id, bg_db)
+        store = get_store()
+        await run_explore_pipeline(sid, store)
 
     background_tasks.add_task(_run)
 
@@ -124,9 +134,8 @@ async def create_session(body: ExploreSessionCreate, background_tasks: Backgroun
 
 
 @router.get("/sessions/{session_id}", response_model=ExploreSessionResponse)
-async def get_session(session_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    r = await db.execute(select(ExploreSession).where(ExploreSession.id == session_id))
-    session = r.scalar_one_or_none()
+async def get_session(session_id: uuid.UUID, db: UserStore = Depends(get_db)):
+    session = await db.select_one("explore_sessions", session_id)
     if not session:
         raise HTTPException(404, "Session not found")
     return await _session_response(db, session)
@@ -137,114 +146,130 @@ async def update_row(
     session_id: uuid.UUID,
     row_id: uuid.UUID,
     body: ExploreRowUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: UserStore = Depends(get_db),
 ):
-    r = await db.execute(
-        select(ExploreRow).where(ExploreRow.id == row_id, ExploreRow.session_id == session_id)
+    rows = await db.select_many(
+        "explore_rows",
+        filters={"id": str(row_id), "session_id": str(session_id)},
+        limit=1,
     )
-    row = r.scalar_one_or_none()
+    row = rows[0] if rows else None
     if not row:
         raise HTTPException(404, "Row not found")
+
+    patch = {}
     for field in ("company_name", "website", "industry", "headcount", "location"):
         val = getattr(body, field, None)
         if val is not None:
-            setattr(row, field, val)
-    sess_r = await db.execute(select(ExploreSession).where(ExploreSession.id == session_id))
-    sess = sess_r.scalar_one_or_none()
+            patch[field] = val
+
+    sess = await db.select_one("explore_sessions", session_id)
+    merged = {**_row_dict(row), **patch}
     if sess:
-        row.fit_score = score_row(_row_dict(row), sess.parsed_icp or {}, sess.icp_prompt)
-    await db.commit()
-    return {"ok": True, "fit_score": row.fit_score}
+        patch["fit_score"] = score_row(merged, sess.parsed_icp or {}, sess.icp_prompt)
+
+    await db.update("explore_rows", row_id, patch)
+    return {"ok": True, "fit_score": patch.get("fit_score", row.fit_score)}
 
 
 @router.post("/sessions/{session_id}/refine")
-async def refine_session(session_id: uuid.UUID, body: ExploreRefineRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
-    r = await db.execute(select(ExploreSession).where(ExploreSession.id == session_id))
-    session = r.scalar_one_or_none()
+async def refine_session(session_id: uuid.UUID, body: ExploreRefineRequest, background_tasks: BackgroundTasks, db: UserStore = Depends(get_db)):
+    session = await db.select_one("explore_sessions", session_id)
     if not session:
         raise HTTPException(404, "Session not found")
 
-    db.add(
-        ExploreChatMessage(
-            id=uuid.uuid4(),
-            session_id=session.id,
-            role="user",
-            content=body.message,
-            created_at=datetime.utcnow(),
-        )
+    now = datetime.utcnow().isoformat()
+    await db.insert(
+        "explore_chat_messages",
+        {
+            "id": str(uuid.uuid4()),
+            "session_id": str(session.id),
+            "role": "user",
+            "content": body.message,
+            "created_at": now,
+        },
     )
-    await db.commit()
 
     cols = [c.get("key") for c in (session.enrichment_columns or [])]
-    rows_r = await db.execute(select(ExploreRow).where(ExploreRow.session_id == session.id))
-    row_count = len(list(rows_r.scalars().all()))
+    explore_rows = await db.list_explore_rows(session.id)
+    row_count = len(explore_rows)
 
     plan = await parse_refinement(body.message, session.icp_prompt, cols, row_count)
     action = plan.get("action", "rescore")
     reply = plan.get("explanation", "Done.")
 
+    session_patch: dict = {"updated_at": now}
+
     if action == "filter" and plan.get("filter_rules"):
-        session.filter_rules = list(session.filter_rules or []) + plan["filter_rules"]
+        session_patch["filter_rules"] = list(session.filter_rules or []) + plan["filter_rules"]
     elif action == "update_icp" and plan.get("icp_addendum"):
-        session.icp_prompt = session.icp_prompt + "\n" + plan["icp_addendum"]
-        session.parsed_icp = await parse_icp_prompt(session.icp_prompt)
+        new_prompt = session.icp_prompt + "\n" + plan["icp_addendum"]
+        session_patch["icp_prompt"] = new_prompt
+        session_patch["parsed_icp"] = await parse_icp_prompt(new_prompt)
     elif action == "add_column" and plan.get("enrichment_column"):
         ec = plan["enrichment_column"]
         cols_list = list(session.enrichment_columns or [])
         if not any(c.get("key") == ec.get("key") for c in cols_list):
             cols_list.append(ec)
-        session.enrichment_columns = cols_list
+        session_patch["enrichment_columns"] = cols_list
         background_tasks.add_task(_enrich_column_all, str(session.id), ec.get("key"), ec.get("type", "tech_stack"))
     elif action in ("add_rows", "find_people"):
         hint = plan.get("search_hint") or body.message
         parsed = {**(session.parsed_icp or {}), "keywords": hint}
         new_rows = await generate_companies_for_source(parsed, "refinement", count=8)
-        await _persist_rows(db, session, dedupe_rows(new_rows), parsed)
+        session_fresh = await db.select_one("explore_sessions", session_id)
+        if session_fresh:
+            await _persist_rows(db, session_fresh, dedupe_rows(new_rows), parsed)
 
     if action in ("rescore", "update_icp", "filter"):
-        rows_r = await db.execute(select(ExploreRow).where(ExploreRow.session_id == session.id))
-        for row in rows_r.scalars().all():
-            row.fit_score = score_row(_row_dict(row), session.parsed_icp or {}, session.icp_prompt)
+        sess = await db.select_one("explore_sessions", session_id)
+        parsed_icp = (sess.parsed_icp if sess else session.parsed_icp) or {}
+        icp_prompt = sess.icp_prompt if sess else session.icp_prompt
+        for row in await db.list_explore_rows(session_id):
+            fit = score_row(_row_dict(row), parsed_icp, icp_prompt)
+            await db.update("explore_rows", row.id, {"fit_score": fit})
 
-    db.add(
-        ExploreChatMessage(
-            id=uuid.uuid4(),
-            session_id=session.id,
-            role="assistant",
-            content=reply,
-            meta=plan,
-            created_at=datetime.utcnow(),
-        )
+    if len(session_patch) > 1:
+        await db.update("explore_sessions", session_id, session_patch)
+
+    await db.insert(
+        "explore_chat_messages",
+        {
+            "id": str(uuid.uuid4()),
+            "session_id": str(session.id),
+            "role": "assistant",
+            "content": reply,
+            "meta": plan,
+            "created_at": now,
+        },
     )
-    session.updated_at = datetime.utcnow()
-    await db.commit()
+
+    session = await db.select_one("explore_sessions", session_id)
     return await _session_response(db, session)
 
 
 async def _enrich_column_all(session_id: str, column_key: str, column_type: str):
-    async with AsyncSessionLocal() as db:
-        sid = uuid.UUID(session_id)
-        sess_r = await db.execute(select(ExploreSession).where(ExploreSession.id == sid))
-        sess = sess_r.scalar_one_or_none()
-        if not sess:
-            return
-        rows_r = await db.execute(select(ExploreRow).where(ExploreRow.session_id == sid))
-        for row in rows_r.scalars().all():
-            enrich = dict(row.enrichment or {})
-            enrich[column_key] = {"value": "", "status": "loading"}
-            row.enrichment = enrich
-        await db.commit()
+    db = get_store()
+    sid = uuid.UUID(session_id)
+    sess = await db.select_one("explore_sessions", sid)
+    if not sess:
+        return
 
-        rows_r = await db.execute(select(ExploreRow).where(ExploreRow.session_id == sid))
-        for row in rows_r.scalars().all():
-            try:
-                result = await enrich_cell(_row_dict(row), column_type, sess.icp_prompt)
-            except Exception as e:
-                result = {"value": "Error", "status": "error", "meta": {"error": str(e)[:100]}}
-            enrich = dict(row.enrichment or {})
-            enrich[column_key] = result
-            row.enrichment = enrich
-            await db.commit()
+    rows = await db.list_explore_rows(sid)
+    for row in rows:
+        enrich = dict(row.enrichment or {})
+        enrich[column_key] = {"value": "", "status": "loading"}
+        await db.update("explore_rows", row.id, {"enrichment": enrich})
+
+    for row in await db.list_explore_rows(sid):
+        try:
+            row_fresh = await db.select_one("explore_rows", row.id)
+            result = await enrich_cell(_row_dict(row_fresh or row), column_type, sess.icp_prompt)
+        except Exception as e:
+            result = {"value": "Error", "status": "error", "meta": {"error": str(e)[:100]}}
+        enrich = dict((row_fresh or row).enrichment or {})
+        enrich[column_key] = result
+        await db.update("explore_rows", row.id, {"enrichment": enrich})
 
 
 @router.post("/sessions/{session_id}/enrich")
@@ -252,20 +277,19 @@ async def add_enrichment_column(
     session_id: uuid.UUID,
     body: ExploreEnrichRequest,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
+    db: UserStore = Depends(get_db),
 ):
-    r = await db.execute(select(ExploreSession).where(ExploreSession.id == session_id))
-    session = r.scalar_one_or_none()
+    session = await db.select_one("explore_sessions", session_id)
     if not session:
         raise HTTPException(404, "Session not found")
 
     cols = list(session.enrichment_columns or [])
     if not any(c.get("key") == body.column_key for c in cols):
         cols.append({"key": body.column_key, "type": body.column_type, "label": body.column_key.replace("_", " ").title()})
-    session.enrichment_columns = cols
-    await db.commit()
+    await db.update("explore_sessions", session_id, {"enrichment_columns": cols})
 
     background_tasks.add_task(_enrich_column_all, str(session.id), body.column_key, body.column_type)
+    session = await db.select_one("explore_sessions", session_id)
     return await _session_response(db, session)
 
 
@@ -273,21 +297,23 @@ async def add_enrichment_column(
 async def set_filters(
     session_id: uuid.UUID,
     rules: List[ExploreFilterRule],
-    db: AsyncSession = Depends(get_db),
+    db: UserStore = Depends(get_db),
 ):
-    r = await db.execute(select(ExploreSession).where(ExploreSession.id == session_id))
-    session = r.scalar_one_or_none()
+    session = await db.select_one("explore_sessions", session_id)
     if not session:
         raise HTTPException(404, "Session not found")
-    session.filter_rules = [rule.model_dump() for rule in rules]
-    await db.commit()
+    await db.update(
+        "explore_sessions",
+        session_id,
+        {"filter_rules": [rule.model_dump() for rule in rules]},
+    )
+    session = await db.select_one("explore_sessions", session_id)
     return await _session_response(db, session)
 
 
 @router.get("/sessions/{session_id}/export.csv")
-async def export_csv(session_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    r = await db.execute(select(ExploreSession).where(ExploreSession.id == session_id))
-    session = r.scalar_one_or_none()
+async def export_csv(session_id: uuid.UUID, db: UserStore = Depends(get_db)):
+    session = await db.select_one("explore_sessions", session_id)
     if not session:
         raise HTTPException(404, "Session not found")
 

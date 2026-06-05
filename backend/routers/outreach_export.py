@@ -8,19 +8,20 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from models import Lead, WorkspaceListLead
-from services.app_settings import get_settings, save_settings
+from services.app_settings import get_linkedin_message_templates, get_settings, save_settings
 from services.instantly_service import DRY_RUN, push_leads_batch
+from user_store import UserStore
+from store import get_store
 
 router = APIRouter()
 
 
 class AppSettingsBody(BaseModel):
     instantly_campaign_id: Optional[str] = None
+    linkedin_connection_template: Optional[str] = None
+    linkedin_follow_up_template: Optional[str] = None
 
 
 class InstantlyPushBody(BaseModel):
@@ -34,8 +35,11 @@ class InstantlyPushBody(BaseModel):
 @router.get("/settings")
 async def read_settings():
     s = get_settings()
+    templates = get_linkedin_message_templates()
     return {
         "instantly_campaign_id": s.get("instantly_campaign_id", ""),
+        "linkedin_connection_template": templates["connection"],
+        "linkedin_follow_up_template": templates["follow_up"],
         "dry_run": DRY_RUN,
         "has_serper": bool(__import__("os").getenv("SERPER_API_KEY")),
         "has_proxycurl": bool(__import__("os").getenv("PROXYCURL_API_KEY")),
@@ -49,23 +53,21 @@ async def update_settings(body: AppSettingsBody):
     s = get_settings()
     if body.instantly_campaign_id is not None:
         s["instantly_campaign_id"] = body.instantly_campaign_id.strip()
+    if body.linkedin_connection_template is not None:
+        s["linkedin_connection_template"] = body.linkedin_connection_template.strip()
+    if body.linkedin_follow_up_template is not None:
+        s["linkedin_follow_up_template"] = body.linkedin_follow_up_template.strip()
     save_settings(s)
     return await read_settings()
 
 
 @router.get("/lists/{list_id}/export.csv")
-async def export_list_csv(list_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    rr = await db.execute(
-        select(WorkspaceListLead, Lead)
-        .outerjoin(Lead, Lead.id == WorkspaceListLead.lead_id)
-        .where(WorkspaceListLead.list_id == list_id)
-        .order_by(WorkspaceListLead.sort_order.asc())
-    )
-    rows = rr.all()
+async def export_list_csv(list_id: uuid.UUID, db: UserStore = Depends(get_db)):
+    pairs = await db.list_workspace_list_leads_joined(list_id)
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["#", "First Name", "Last Name", "Title", "Company", "Email", "LinkedIn", "Score"])
-    for i, (wl, lead) in enumerate(rows, 1):
+    for i, (wl, lead) in enumerate(pairs, 1):
         email = (lead.email if lead else "") or (wl.extra or {}).get("email", "")
         w.writerow([
             i,
@@ -89,21 +91,18 @@ async def export_list_csv(list_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 async def push_to_instantly(
     list_id: uuid.UUID,
     body: InstantlyPushBody,
-    db: AsyncSession = Depends(get_db),
+    db: UserStore = Depends(get_db),
 ):
     settings = get_settings()
     campaign_id = os.getenv("INSTANTLY_CAMPAIGN_ID", "").strip() or settings.get("instantly_campaign_id", "")
     if not campaign_id:
         raise HTTPException(400, "Set Instantly campaign ID in Settings")
 
-    q = (
-        select(WorkspaceListLead, Lead)
-        .outerjoin(Lead, Lead.id == WorkspaceListLead.lead_id)
-        .where(WorkspaceListLead.list_id == list_id)
-    )
+    pairs = await db.list_workspace_list_leads_joined(list_id)
     if body.lead_ids:
-        q = q.where(WorkspaceListLead.id.in_(body.lead_ids))
-    pairs = list((await db.execute(q)).all())
+        allowed = {str(x) for x in body.lead_ids}
+        pairs = [(wl, lead) for wl, lead in pairs if str(wl.id) in allowed]
+
     leads_payload = []
     for wl, lead in pairs:
         email = (lead.email if lead else "") or (wl.extra or {}).get("email", "")
@@ -119,7 +118,6 @@ async def push_to_instantly(
     if result.get("pushed"):
         for wl, lead in pairs:
             if lead:
-                lead.sequence_status = "instantly_queued"
-        await db.commit()
+                await db.update("leads", lead.id, {"sequence_status": "instantly_queued"})
 
     return result

@@ -1,249 +1,223 @@
 "use client";
 
-import { useEffect, useState, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
-import { getLeads, generateLinkedInMessages } from "@/lib/api";
-import { peek, put } from "@/lib/cache";
-import type { Lead, LinkedInMessage } from "@/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { getInbox, syncInbox, type InboxItem } from "@/lib/api";
 
-const TYPE_OPTS = [
-  { value: "connection_request", label: "Connection Request", desc: "≤300 chars · Sent with connection invite" },
-  { value: "follow_up_message", label: "Follow-up Message", desc: "After connecting · Personalized pitch" },
-  { value: "final_message", label: "Final Message", desc: "Day 7 · Short, leaves door open" },
-] as const;
+type Tab = "all" | "replies";
+type StatusFilter = "any" | InboxItem["status"];
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      onClick={async () => { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
-      style={{ padding: "6px 12px", fontSize: 12, background: copied ? "#f0fdf4" : "#fff", border: `1.5px solid ${copied ? "#bbf7d0" : "#d8d8dc"}`, borderRadius: 6, cursor: "pointer", color: copied ? "#166534" : "#3a3a3c", fontWeight: 500, transition: "all 0.15s" }}
-    >
-      {copied ? "✓ Copied" : "Copy"}
-    </button>
-  );
+const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
+  { value: "any", label: "Any" },
+  { value: "draft", label: "Draft" },
+  { value: "scheduled", label: "Scheduled" },
+  { value: "in_progress", label: "In progress" },
+  { value: "sent", label: "Sent" },
+  { value: "replied", label: "Replied" },
+  { value: "failed", label: "Failed" },
+];
+
+function statusClass(status: InboxItem["status"]) {
+  const map: Record<InboxItem["status"], string> = {
+    draft: "draft",
+    scheduled: "scheduled",
+    sent: "sent",
+    in_progress: "progress",
+    replied: "replied",
+    failed: "failed",
+    stopped: "stopped",
+  };
+  return map[status] || "draft";
 }
 
-function CharBar({ count, max = 300 }: { count: number; max?: number }) {
-  const pct = Math.min((count / max) * 100, 100);
-  const over = count > max;
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <div style={{ flex: 1, height: 4, background: "#f0f0f2", borderRadius: 4, overflow: "hidden" }}>
-        <div style={{ height: "100%", width: `${pct}%`, background: over ? "#6E56CF" : count > max * 0.85 ? "#f59e0b" : "#16a34a", borderRadius: 4, transition: "width 0.2s" }} />
-      </div>
-      <span style={{ fontSize: 11, fontFamily: "monospace", color: over ? "#6E56CF" : "#6b6b70", fontWeight: 600 }}>{count}/{max}</span>
-    </div>
-  );
+function recipientInitial(item: InboxItem) {
+  return (item.recipient[0] || item.name[0] || "?").toUpperCase();
 }
 
-function OutreachContent() {
-  const searchParams = useSearchParams();
-  const preIds = searchParams.get("ids")?.split(",").filter(Boolean) ?? [];
+export default function InboxPage() {
+  const [items, setItems] = useState<InboxItem[]>([]);
+  const [stats, setStats] = useState({ all: 0, replies: 0, sent_week: 0 });
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [tab, setTab] = useState<Tab>("all");
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("any");
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [error, setError] = useState("");
+  const filterRef = useRef<HTMLDivElement>(null);
 
-  const [leads, setLeads] = useState<Lead[]>(() => peek<Lead[]>("leads") ?? []);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set(preIds));
-  const [seqType, setSeqType] = useState("connection_request");
-  const [messages, setMessages] = useState<LinkedInMessage[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [leadsLoading, setLeadsLoading] = useState(!peek("leads"));
-
-  useEffect(() => {
-    if (peek("leads")) {
-      // Already cached — fetch silently in background to stay fresh
-      getLeads().then(data => { setLeads(data); put("leads", data); }).catch(console.error);
-      return;
+  const load = useCallback(async (sync = false) => {
+    if (sync) setSyncing(true);
+    else setLoading(true);
+    setError("");
+    try {
+      const data = await getInbox(sync);
+      setItems(data.items);
+      setStats(data.stats);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Could not load inbox");
+    } finally {
+      setLoading(false);
+      setSyncing(false);
     }
-    getLeads()
-      .then(data => { setLeads(data); put("leads", data); })
-      .catch(console.error)
-      .finally(() => setLeadsLoading(false));
   }, []);
 
-  const toggle = (id: string) => {
-    setSelectedIds(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
-    setMessages([]);
-  };
+  useEffect(() => {
+    load(false);
+  }, [load]);
 
-  const handleGenerate = async () => {
-    if (selectedIds.size === 0) return;
-    setLoading(true); setMessages([]);
-    try { const r = await generateLinkedInMessages(Array.from(selectedIds), seqType); setMessages(r.messages); }
-    catch (e) { console.error(e); }
-    finally { setLoading(false); }
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      if (filterRef.current && !filterRef.current.contains(e.target as Node)) {
+        setFilterOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return items.filter((item) => {
+      if (tab === "replies" && item.status !== "replied") return false;
+      if (statusFilter !== "any" && item.status !== statusFilter) return false;
+      if (!q) return true;
+      return (
+        item.recipient.toLowerCase().includes(q) ||
+        item.name.toLowerCase().includes(q) ||
+        item.campaign_name.toLowerCase().includes(q) ||
+        item.search_prompt.toLowerCase().includes(q) ||
+        item.connection_note.toLowerCase().includes(q)
+      );
+    });
+  }, [items, tab, statusFilter, query]);
+
+  const itemHref = (item: InboxItem) => {
+    if (item.search_id) return `/search/${item.search_id}?campaign=1&lead=${item.lead_id}`;
+    if (item.campaign_id) return `/sequencing/campaigns/${item.campaign_id}`;
+    return "#";
   };
 
   return (
-    <>
-      <header className="page-header">
-        <h1 className="page-title">Outreach</h1>
+    <div className="hedwig-inbox">
+      <header className="hedwig-inbox-head">
+        <div className="hedwig-inbox-tabs">
+          <button
+            type="button"
+            className={`hedwig-inbox-tab${tab === "replies" ? " active" : ""}`}
+            onClick={() => setTab("replies")}
+          >
+            Replies <span className="hedwig-inbox-count">{stats.replies}</span>
+          </button>
+          <button
+            type="button"
+            className={`hedwig-inbox-tab${tab === "all" ? " active" : ""}`}
+            onClick={() => setTab("all")}
+          >
+            All <span className="hedwig-inbox-count">{stats.all}</span>
+          </button>
+        </div>
+        <div className="hedwig-inbox-head-right">
+          <span className="hedwig-inbox-meta">
+            {stats.sent_week} sent this week · {stats.replies} replied
+          </span>
+          <button
+            type="button"
+            className="hedwig-inbox-sync"
+            disabled={syncing}
+            onClick={() => syncInbox().then(() => load(false))}
+          >
+            {syncing ? "Syncing…" : "Sync Origami"}
+          </button>
+        </div>
       </header>
 
-      <div style={{ padding: "0 40px 40px", display: "grid", gridTemplateColumns: "220px 1fr 1fr", gap: 20, alignItems: "start" }}>
+      {error && (
+        <p className="hedwig-inbox-empty" style={{ padding: "12px 24px", color: "#b91c1c" }}>
+          {error}
+        </p>
+      )}
 
-        {/* Col 1: Lead list */}
-        <div className="card" style={{ overflow: "hidden" }}>
-          <div style={{ padding: "14px 16px", borderBottom: "1px solid #e8e8ea" }}>
-            <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#0a0a0a" }}>Leads</p>
-            <p style={{ margin: "2px 0 0", fontSize: 11, color: "#6b6b70" }}>{selectedIds.size} selected</p>
-          </div>
-          <div style={{ maxHeight: 520, overflowY: "auto" }}>
-            {leadsLoading && leads.length === 0 ? (
-              <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
-                {[0,1,2,3,4].map(i => <div key={i} className="skeleton" style={{ height: 44, borderRadius: 7 }} />)}
-              </div>
-            ) : leads.length === 0 ? (
-              <p style={{ padding: 16, margin: 0, fontSize: 13, color: "#8a8a8e", textAlign: "center" }}>No leads. Start prospecting.</p>
-            ) : leads.map((lead, i) => (
-              <label key={lead.id} style={{
-                display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
-                borderBottom: i < leads.length - 1 ? "1px solid #f0f0f2" : "none",
-                cursor: "pointer",
-                background: selectedIds.has(lead.id) ? "#fff5f6" : "#fff",
-                transition: "background 0.08s",
-              }}>
-                <input type="checkbox" checked={selectedIds.has(lead.id)} onChange={() => toggle(lead.id)} style={{ accentColor: "#6E56CF", flexShrink: 0 }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={{ margin: 0, fontSize: 12, fontWeight: 500, color: "#0a0a0a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{lead.name}</p>
-                  <p style={{ margin: 0, fontSize: 11, color: "#6b6b70", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{lead.company}</p>
-                </div>
-                {lead.icp_score && (
-                  <span style={{
-                    fontSize: 11, fontWeight: 700, minWidth: 22, height: 22, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
-                    background: lead.icp_score >= 8 ? "#f0fdf4" : lead.icp_score >= 5 ? "#fffbeb" : "#fff1f2",
-                    color: lead.icp_score >= 8 ? "#166534" : lead.icp_score >= 5 ? "#92400e" : "#9f1239",
-                  }}>
-                    {lead.icp_score}
-                  </span>
-                )}
-              </label>
-            ))}
-          </div>
-          {leads.length > 0 && (
-            <div style={{ padding: "10px 14px", borderTop: "1px solid #e8e8ea" }}>
-              <button onClick={() => { if (selectedIds.size === leads.length) setSelectedIds(new Set()); else setSelectedIds(new Set(leads.map(l => l.id))); setMessages([]); }}
-                style={{ fontSize: 12, color: "#6b6b70", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-                {selectedIds.size === leads.length ? "Deselect all" : "Select all"}
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Col 2: Type + Generate */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div className="card" style={{ padding: 20 }}>
-            <p style={{ margin: "0 0 14px", fontSize: 13, fontWeight: 600, color: "#0a0a0a" }}>Message Type</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {TYPE_OPTS.map(opt => (
-                <button key={opt.value} onClick={() => { setSeqType(opt.value); setMessages([]); }}
-                  style={{
-                    display: "flex", flexDirection: "column", alignItems: "flex-start",
-                    padding: "12px 14px", borderRadius: 8, cursor: "pointer", textAlign: "left",
-                    border: `1.5px solid ${seqType === opt.value ? "#6E56CF" : "#e8e8ea"}`,
-                    background: seqType === opt.value ? "#fff5f6" : "#fff",
-                    transition: "all 0.12s",
-                  }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: seqType === opt.value ? "#6E56CF" : "#0a0a0a" }}>{opt.label}</span>
-                  <span style={{ fontSize: 11, color: "#6b6b70", marginTop: 2 }}>{opt.desc}</span>
+      <div className="hedwig-inbox-toolbar">
+        <label className="hedwig-inbox-select-all">
+          <input type="checkbox" readOnly checked={false} />
+          <span>Select all {filtered.length}</span>
+        </label>
+        <input
+          className="hedwig-inbox-search"
+          placeholder="Search recipient or campaign"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <div className="hedwig-inbox-filter-wrap" ref={filterRef}>
+          <button
+            type="button"
+            className="hedwig-inbox-filter-btn"
+            onClick={() => setFilterOpen(!filterOpen)}
+            aria-label="Filter"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M4 6h16M7 12h10M10 18h4" />
+            </svg>
+          </button>
+          {filterOpen && (
+            <div className="hedwig-inbox-filter-menu">
+              <p className="hedwig-inbox-filter-label">Status</p>
+              {STATUS_FILTERS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  className={`hedwig-inbox-filter-opt${statusFilter === opt.value ? " active" : ""}`}
+                  onClick={() => {
+                    setStatusFilter(opt.value);
+                    setFilterOpen(false);
+                  }}
+                >
+                  {opt.label}
+                  {opt.value !== "any" && (
+                    <span>
+                      {items.filter((i) => i.status === opt.value).length}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
-          </div>
-
-          <button
-            onClick={handleGenerate}
-            disabled={loading || selectedIds.size === 0}
-            className="btn-primary"
-            style={{ width: "100%", justifyContent: "center", padding: "12px 0", fontSize: 14 }}
-          >
-            {loading ? (
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ display: "inline-block", width: 14, height: 14, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-                Generating with Claude...
-              </span>
-            ) : `Generate ${selectedIds.size > 0 ? `${selectedIds.size} ` : ""}Message${selectedIds.size !== 1 ? "s" : ""}`}
-          </button>
-
-          <div className="card" style={{ padding: 16 }}>
-            <p style={{ margin: "0 0 6px", fontSize: 12, fontWeight: 600, color: "#3a3a3c" }}>To automate sending</p>
-            <p style={{ margin: 0, fontSize: 12, color: "#6b6b70", lineHeight: 1.6 }}>
-              Go to <strong style={{ color: "#0a0a0a" }}>Sequences</strong> → pick a sequence → click <strong style={{ color: "#6E56CF" }}>Run</strong> to connect and message everyone automatically.
-            </p>
-          </div>
-        </div>
-
-        {/* Col 3: Preview */}
-        <div className="card" style={{ overflow: "hidden" }}>
-          <div style={{ padding: "14px 16px", borderBottom: "1px solid #e8e8ea" }}>
-            <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#0a0a0a" }}>
-              Preview {messages.length > 0 && <span style={{ fontWeight: 400, color: "#6b6b70" }}>({messages.length})</span>}
-            </p>
-          </div>
-
-          <div style={{ maxHeight: 580, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
-            {loading && (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px 0" }}>
-                <div style={{ width: 32, height: 32, border: "3px solid #f0f0f2", borderTopColor: "#6E56CF", borderRadius: "50%", animation: "spin 0.8s linear infinite", marginBottom: 12 }} />
-                <p style={{ margin: 0, fontSize: 13, color: "#6b6b70" }}>Claude is personalizing messages...</p>
-              </div>
-            )}
-
-            {!loading && messages.length === 0 && (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px 0" }}>
-                <div style={{ width: 44, height: 44, borderRadius: "50%", background: "#f0f0f2", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 12 }}>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="#8a8a8e" strokeWidth={1.5} width={22} height={22}><path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" /></svg>
-                </div>
-                <p style={{ margin: 0, fontSize: 13, color: "#8a8a8e" }}>Select leads and click Generate</p>
-              </div>
-            )}
-
-            {messages.map(msg => (
-              <div key={msg.lead_id} style={{ border: "1.5px solid #e8e8ea", borderRadius: 10, overflow: "hidden" }}>
-                <div style={{ padding: "10px 14px", background: "#f7f7f8", borderBottom: "1px solid #e8e8ea", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: "#0a0a0a" }}>{msg.lead_name}</p>
-                    <p style={{ margin: 0, fontSize: 11, color: "#6b6b70" }}>{msg.company}</p>
-                  </div>
-                  {msg.linkedin_url && (
-                    <a href={msg.linkedin_url} target="_blank" rel="noopener noreferrer"
-                      style={{ fontSize: 11, color: "#0077B5", textDecoration: "none", fontWeight: 500 }}>
-                      LinkedIn ↗
-                    </a>
-                  )}
-                </div>
-                <div style={{ padding: 14 }}>
-                  <p style={{ margin: "0 0 12px", fontSize: 13, color: "#1a1a1e", whiteSpace: "pre-wrap", lineHeight: 1.65 }}>
-                    {msg.content}
-                  </p>
-                  {msg.type === "connection_request" && (
-                    <div style={{ marginBottom: 12 }}>
-                      <CharBar count={msg.char_count ?? msg.content.length} />
-                    </div>
-                  )}
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <CopyButton text={msg.content} />
-                    {msg.linkedin_url && (
-                      <a href={msg.linkedin_url} target="_blank" rel="noopener noreferrer"
-                        style={{ padding: "6px 12px", fontSize: 12, background: "#e8f4fd", border: "1.5px solid #bfdbfe", borderRadius: 6, color: "#1b6fd8", textDecoration: "none", fontWeight: 500 }}>
-                        Open LinkedIn
-                      </a>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+          )}
         </div>
       </div>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </>
-  );
-}
 
-export default function OutreachPage() {
-  return (
-    <Suspense fallback={<div style={{ padding: 36, color: "#6b6b70" }}>Loading...</div>}>
-      <OutreachContent />
-    </Suspense>
+      <div className="hedwig-inbox-list">
+        {loading && items.length === 0 ? (
+          <p className="hedwig-inbox-empty">Loading inbox…</p>
+        ) : filtered.length === 0 ? (
+          <p className="hedwig-inbox-empty">
+            {tab === "replies"
+              ? "No replies yet"
+              : statusFilter !== "any"
+                ? `No ${statusFilter.replace("_", " ")} messages`
+                : "No messages yet — launch a campaign to see drafts and scheduled sends here"}
+          </p>
+        ) : (
+          filtered.map((item) => (
+            <Link key={item.id} href={itemHref(item)} className="hedwig-inbox-row">
+              <span className="hedwig-inbox-avatar">{recipientInitial(item)}</span>
+              <div className="hedwig-inbox-row-main">
+                <div className="hedwig-inbox-row-top">
+                  <span className="hedwig-inbox-recipient">{item.recipient}</span>
+                  <span className="hedwig-inbox-campaign">{item.campaign_name}</span>
+                </div>
+                {item.connection_note && (
+                  <p className="hedwig-inbox-preview">{item.connection_note}</p>
+                )}
+              </div>
+              <span className={`hedwig-inbox-status ${statusClass(item.status)}`}>
+                {item.status_label}
+              </span>
+              <span className="hedwig-inbox-time">{item.activity_label || "—"}</span>
+            </Link>
+          ))
+        )}
+      </div>
+    </div>
   );
 }

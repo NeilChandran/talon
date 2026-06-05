@@ -5,6 +5,7 @@ load_dotenv(Path(__file__).parent / ".env", override=True)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from middleware_auth import AuthMiddleware
 from routers import leads, outreach, prospecting, sequences
 from routers import linkedin_auth
 from routers import analytics
@@ -12,12 +13,14 @@ from routers import campaigns, agent, explore, workspaces, outreach_export, sear
 
 app = FastAPI(title="Talon API", version="2.0.0")
 
+app.add_middleware(AuthMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "Authorization"],
 )
 
 app.include_router(leads.router, prefix="/leads", tags=["leads"])

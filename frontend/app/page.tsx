@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createSearch, getRecentSearches, type RecentSearch } from "@/lib/api";
+import { hardNavigateClick } from "@/lib/navigation";
 import TalonLogo from "@/components/TalonLogo";
 
 const PLACEHOLDER = "Find VPs of Sales at SaaS companies that just raised Series B.";
@@ -52,7 +53,7 @@ export default function HomePage() {
         </div>
         <h1>How can I find your perfect customers?</h1>
         <p className="hedwig-home-sub">
-          Origami finds your leads — you send and track everything from Talon (LinkedIn + email), without leaving the app.
+          Talon finds your leads — research, LinkedIn outreach, and email, all in one place.
         </p>
 
         <div className="hedwig-home-prompt">
@@ -85,12 +86,18 @@ export default function HomePage() {
             </p>
             <div className="hedwig-recent-card">
               {recent.map((s) => (
-                <Link key={s.id} href={`/search/${s.id}`} className="hedwig-recent-row">
+                <a
+                  key={s.id}
+                  href={`/search/${s.id}`}
+                  data-hard-nav
+                  className="hedwig-recent-row"
+                  onClick={hardNavigateClick(`/search/${s.id}`)}
+                >
                   <p style={{ margin: 0, fontSize: 14, fontWeight: 500 }}>{s.prompt}</p>
                   <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--text-muted)" }}>
                     {s.lead_count} leads · {s.status_message || s.status}
                   </p>
-                </Link>
+                </a>
               ))}
             </div>
           </div>

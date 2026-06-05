@@ -18,20 +18,26 @@ if [[ ! -d venv ]]; then python3 -m venv venv; fi
 source venv/bin/activate
 pip install -q -U pip
 pip install -q fastapi uvicorn httpx anthropic python-dotenv greenlet \
-  "pydantic>=2.10" "sqlalchemy>=2.0" aiosqlite python-multipart websockets playwright \
+  "pydantic>=2.10" supabase python-multipart websockets playwright \
   celery redis
 playwright install chromium 2>/dev/null || true
 
 export DATABASE_URL="${DATABASE_URL:-sqlite+aiosqlite:///$RUN/backend/talon.db}"
-# Celery only when Redis is actually running (otherwise searches never execute)
-if ! command -v redis-cli >/dev/null 2>&1 || ! redis-cli ping >/dev/null 2>&1; then
+# Searches run in-process unless USE_CELERY=1 and a worker is running
+export USE_CELERY="${USE_CELERY:-0}"
+if [[ "$USE_CELERY" != "1" ]]; then
   unset REDIS_URL
 fi
 python init_db.py 2>/dev/null || true
 
+echo "→ Stopping stale dev servers (if any)..."
+lsof -ti:8000 2>/dev/null | xargs kill -9 2>/dev/null || true
+lsof -ti:3000 2>/dev/null | xargs kill -9 2>/dev/null || true
+sleep 1
+
 echo "→ Frontend..."
 cd "$RUN/frontend"
-[[ -d node_modules ]] || npm install
+npm install
 # Clear stale Next cache so UI changes (logo, styles) always show
 rm -rf .next
 

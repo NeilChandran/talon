@@ -29,7 +29,16 @@ import type {
   Stats,
 } from "@/types";
 
+import { getAccessToken } from "@/lib/supabase";
+
 const BASE = "/api";
+
+async function authHeaders(): Promise<HeadersInit> {
+  const token = await getAccessToken();
+  const h: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) h.Authorization = `Bearer ${token}`;
+  return h;
+}
 
 async function parseError(res: Response): Promise<string> {
   const text = await res.text();
@@ -48,15 +57,19 @@ async function parseError(res: Response): Promise<string> {
   if (res.status === 404) {
     return "API route not found — restart the backend (./scripts/start.sh) so /searches is available";
   }
+  if (res.status === 500 && text === "Internal Server Error") {
+    return "Server error — restart with ./scripts/start.sh (check backend terminal for details)";
+  }
   return text.slice(0, 200) || `Request failed (${res.status})`;
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   let res: Response;
+  const headers = await authHeaders();
   try {
     res = await fetch(`${BASE}${path}`, {
-      headers: { "Content-Type": "application/json" },
       ...options,
+      headers: { ...headers, ...(options?.headers as Record<string, string>) },
     });
   } catch {
     throw new Error(
@@ -167,6 +180,51 @@ export const getProspectingStatus = (jobId: string) =>
   request<ProspectingJob>(`/prospecting/status/${jobId}`);
 
 // ─── LinkedIn Outreach ────────────────────────────────────────────────────────
+
+export type InboxItem = {
+  id: string;
+  enrollment_id: string;
+  lead_id: string;
+  campaign_id: string;
+  search_id: string;
+  recipient: string;
+  name: string;
+  title: string;
+  company: string;
+  linkedin_url: string;
+  campaign_name: string;
+  search_prompt: string;
+  status: "draft" | "scheduled" | "sent" | "in_progress" | "replied" | "failed" | "stopped";
+  status_label: string;
+  enrollment_status: string;
+  origami_send_status?: string | null;
+  scheduled_at?: string | null;
+  connection_note: string;
+  follow_up_message: string;
+  activity_at?: string | null;
+  activity_label: string;
+  last_error?: string | null;
+};
+
+export type InboxStats = {
+  all: number;
+  replies: number;
+  sent_week: number;
+  draft?: number;
+  scheduled?: number;
+  sent?: number;
+  in_progress?: number;
+};
+
+export const getInbox = (sync = false) =>
+  request<{ items: InboxItem[]; stats: InboxStats }>(
+    `/outreach/inbox${sync ? "?sync=1" : ""}`
+  );
+
+export const syncInbox = () =>
+  request<{ ok: boolean; items: number; stats: InboxStats }>("/outreach/inbox/sync", {
+    method: "POST",
+  });
 
 export const generateLinkedInMessages = (
   leadIds: string[],
@@ -357,7 +415,21 @@ export const createSearch = (prompt: string) =>
 
 export const getRecentSearches = () => request<RecentSearch[]>("/searches/recent");
 
+export const deleteSearch = (id: string) =>
+  request<{ ok: boolean; id: string }>(`/searches/${id}`, { method: "DELETE" });
+
 export const getSearch = (id: string) => request<SearchDetail>(`/searches/${id}`);
+
+/** Returns null when workspace was deleted — avoids crashing the search page. */
+export async function getSearchOrNull(id: string): Promise<SearchDetail | null> {
+  try {
+    return await getSearch(id);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "";
+    if (msg.toLowerCase().includes("not found")) return null;
+    throw e;
+  }
+}
 
 export const resumeSearch = (id: string) =>
   request<{ ok: boolean; id: string; status: string }>(`/searches/${id}/resume`, { method: "POST" });
@@ -378,6 +450,27 @@ export const searchAgentMessage = (id: string, message: string) =>
     method: "POST",
     body: JSON.stringify({ message }),
   });
+
+export const prepareSearchCampaign = (searchId: string) =>
+  request<{
+    ok: boolean;
+    campaign_id: string;
+    campaign: {
+      id: string;
+      name: string;
+      connection_note_template: string;
+      message_template: string;
+      wait_days_after_accept: number;
+    };
+    enrollments: import("@/types").CampaignEnrollment[];
+    count: number;
+  }>(`/searches/${searchId}/campaign/prepare`, { method: "POST" });
+
+export const launchOrigamiCampaign = (searchId: string) =>
+  request<{ job_id: string; status: string; campaign_id: string; ready_count: number }>(
+    `/searches/${searchId}/campaign/launch-origami`,
+    { method: "POST" }
+  );
 
 export const sendSearchLinkedIn = (
   searchId: string,
@@ -514,7 +607,11 @@ export function exploreExportUrl(sessionId: string) {
 
 export const getAppSettings = () => request<AppSettings>("/outreach-export/settings");
 
-export const updateAppSettings = (data: { instantly_campaign_id?: string }) =>
+export const updateAppSettings = (data: {
+  instantly_campaign_id?: string;
+  linkedin_connection_template?: string;
+  linkedin_follow_up_template?: string;
+}) =>
   request<AppSettings>("/outreach-export/settings", {
     method: "PUT",
     body: JSON.stringify(data),

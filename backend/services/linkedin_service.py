@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from services.outreach_templates import fit_connection_note
+
 # Thread pool exclusively for the headful login browser (not used for API calls)
 _pw_executor = ThreadPoolExecutor(max_workers=1)
 
@@ -1467,6 +1469,96 @@ def _extract_public_id(linkedin_url: str) -> Optional[str]:
     return None
 
 
+def _lookup_profile_via_browser_sync(public_id: str) -> Optional[Dict[str, str]]:
+    """Resolve ACoAAA profile id via Voyager API in live Chrome."""
+    import re as _re
+    import time
+    from websockets.sync.client import connect as ws_connect
+
+    port = _CDP_PORT
+    tabs = _cdp_list_tabs(port)
+    if not tabs and not _relaunch_browser_for_search_sync():
+        return None
+    tabs = _cdp_list_tabs(port) or []
+    tab_ws = None
+    for t in tabs:
+        url = t.get("url", "")
+        if "linkedin.com" in url and "/login" not in url:
+            tab_ws = t.get("webSocketDebuggerUrl")
+            break
+    if not tab_ws:
+        return None
+
+    api_url = (
+        f"/voyager/api/identity/dash/profiles"
+        f"?q=memberIdentity&memberIdentity={public_id}"
+        f"&decorationId=com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-93"
+    )
+    try:
+        with ws_connect(tab_ws, open_timeout=8, max_size=8 * 1024 * 1024) as ws:
+            mid = [0]
+
+            def send(method, params=None):
+                mid[0] += 1
+                rid = mid[0]
+                ws.send(json.dumps({"id": rid, "method": method, "params": params or {}}))
+                return rid
+
+            def recv_id(rid, timeout=12.0):
+                dl = time.time() + timeout
+                while time.time() < dl:
+                    try:
+                        msg = json.loads(ws.recv(timeout=min(1.0, dl - time.time())))
+                        if msg.get("id") == rid:
+                            return msg
+                    except Exception:
+                        pass
+                return None
+
+            recv_id(send("Runtime.enable"), 3)
+            csrf_js = r"""(function(){var m=document.cookie.match(/JSESSIONID=["']?([^"';]+)["']?/);return m?m[1]:'';})()"""
+            csrf_result = recv_id(send("Runtime.evaluate", {"expression": csrf_js, "returnByValue": True}), 5)
+            csrf = (csrf_result or {}).get("result", {}).get("result", {}).get("value", "")
+            if not csrf:
+                return None
+            js_fetch = f"""
+                (async function() {{
+                    const r = await fetch('{api_url}', {{
+                        headers: {{
+                            'Accept': 'application/vnd.linkedin.normalized+json+2.1',
+                            'csrf-token': '{csrf}',
+                            'x-restli-protocol-version': '2.0.0',
+                        }},
+                        credentials: 'include',
+                    }});
+                    const body = await r.text();
+                    return JSON.stringify({{status: r.status, body: body.substring(0, 8000)}});
+                }})()
+            """
+            fetch_msg = recv_id(
+                send("Runtime.evaluate", {"expression": js_fetch, "awaitPromise": True, "returnByValue": True}),
+                timeout=20,
+            )
+            raw_val = (fetch_msg or {}).get("result", {}).get("result", {}).get("value", "")
+            if not raw_val:
+                return None
+            outer = json.loads(raw_val)
+            if int(outer.get("status") or 0) != 200:
+                return None
+            body = outer.get("body") or ""
+            urn_match = _re.search(r"(ACoA[A-Za-z0-9_-]+)", body)
+            if not urn_match:
+                return None
+            profile_id = urn_match.group(1)
+            member_match = _re.search(r"urn:li:member:(\d+)", body)
+            member_id = member_match.group(1) if member_match else ""
+            print(f"[linkedin] browser resolved {public_id!r} → {profile_id}", flush=True)
+            return {"linkedin_profile_id": profile_id, "linkedin_member_id": member_id}
+    except Exception as e:
+        print(f"[linkedin] browser profile lookup error: {e}", flush=True)
+        return None
+
+
 async def lookup_profile(
     public_id: str,
     li_at: str,
@@ -1541,6 +1633,12 @@ async def lookup_profile(
                 print(f"[linkedin] {label} response had no IDs for {public_id!r}", flush=True)
 
             if auth_failed:
+                loop = asyncio.get_event_loop()
+                browser_ids = await loop.run_in_executor(
+                    _pw_executor, _lookup_profile_via_browser_sync, public_id
+                )
+                if browser_ids:
+                    return browser_ids
                 return None
 
             # ── Fallback: scrape profile ID from the profile page HTML ────────
@@ -1579,11 +1677,16 @@ async def lookup_profile(
                 print(f"[linkedin] profile page HTTP {page_resp.status_code} for {public_id!r}", flush=True)
 
         print(f"[linkedin] all methods failed for {public_id!r}", flush=True)
-        return None
+        loop = asyncio.get_event_loop()
+        browser_ids = await loop.run_in_executor(
+            _pw_executor, _lookup_profile_via_browser_sync, public_id
+        )
+        return browser_ids
 
     except Exception as e:
         print(f"[linkedin] lookup_profile error for {public_id!r}: {e}", flush=True)
-        return None
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(_pw_executor, _lookup_profile_via_browser_sync, public_id)
 
 
 async def resolve_lead_ids(
@@ -1606,6 +1709,115 @@ async def resolve_lead_ids(
 # ──────────────────────────────────────────────────────────────────────────────
 # Connection requests
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _send_connection_via_browser_sync(profile_id: str, note: str) -> Dict[str, Any]:
+    """POST normInvitations from a live Chrome LinkedIn tab (CDP fetch)."""
+    import time
+    from websockets.sync.client import connect as ws_connect
+
+    port = _CDP_PORT
+    tabs = _cdp_list_tabs(port)
+    if not tabs:
+        if not _relaunch_browser_for_search_sync():
+            return {"success": False, "error": "Chrome not running — use Sign in with LinkedIn in Settings"}
+        tabs = _cdp_list_tabs(port)
+    if not tabs:
+        return {"success": False, "error": "Could not start Chrome for LinkedIn"}
+
+    tab_ws = None
+    for t in tabs:
+        url = t.get("url", "")
+        if "linkedin.com" in url and "/login" not in url and "/authwall" not in url:
+            tab_ws = t.get("webSocketDebuggerUrl")
+            break
+    if not tab_ws:
+        return {"success": False, "error": "No LinkedIn tab — sign in via Settings"}
+
+    tracking_id = base64.b64encode(os.urandom(16)).decode("utf-8")
+    payload = {
+        "trackingId": tracking_id,
+        "invitations": [],
+        "excludeInvitations": [],
+        "invitee": {
+            "com.linkedin.voyager.growth.invitation.InviteeProfile": {"profileId": profile_id}
+        },
+        "message": fit_connection_note(note),
+    }
+    try:
+        with ws_connect(tab_ws, open_timeout=8, max_size=8 * 1024 * 1024) as ws:
+            mid = [0]
+
+            def send(method, params=None):
+                mid[0] += 1
+                rid = mid[0]
+                ws.send(json.dumps({"id": rid, "method": method, "params": params or {}}))
+                return rid
+
+            def recv_id(rid, timeout=12.0):
+                dl = time.time() + timeout
+                while time.time() < dl:
+                    try:
+                        msg = json.loads(ws.recv(timeout=min(1.0, dl - time.time())))
+                        if msg.get("id") == rid:
+                            return msg
+                    except Exception:
+                        pass
+                return None
+
+            recv_id(send("Runtime.enable"), 3)
+            url_result = recv_id(send("Runtime.evaluate", {"expression": "location.href", "returnByValue": True}), 5)
+            current_url = (url_result or {}).get("result", {}).get("result", {}).get("value", "")
+            if any(x in (current_url or "") for x in ("/login", "/authwall", "/uas/")):
+                return {"success": False, "error": "LinkedIn session expired — sign in again in Settings"}
+
+            csrf_js = r"""(function(){var m=document.cookie.match(/JSESSIONID=["']?([^"';]+)["']?/);return m?m[1]:'';})()"""
+            csrf_result = recv_id(send("Runtime.evaluate", {"expression": csrf_js, "returnByValue": True}), 5)
+            csrf = (csrf_result or {}).get("result", {}).get("result", {}).get("value", "")
+            if not csrf:
+                return {"success": False, "error": "No CSRF token in browser — sign in again in Settings"}
+
+            js_fetch = f"""
+                (async function() {{
+                    const r = await fetch('/voyager/api/growth/normInvitations', {{
+                        method: 'POST',
+                        headers: {{
+                            'Accept': 'application/vnd.linkedin.normalized+json+2.1',
+                            'Content-Type': 'application/json',
+                            'csrf-token': '{csrf}',
+                            'x-restli-protocol-version': '2.0.0',
+                        }},
+                        credentials: 'include',
+                        body: {json.dumps(json.dumps(payload))},
+                    }});
+                    const body = await r.text().catch(() => '');
+                    return JSON.stringify({{status: r.status, body: body.substring(0, 400)}});
+                }})()
+            """
+            fetch_msg = recv_id(
+                send("Runtime.evaluate", {"expression": js_fetch, "awaitPromise": True, "returnByValue": True}),
+                timeout=20,
+            )
+            raw_val = (fetch_msg or {}).get("result", {}).get("result", {}).get("value", "")
+            if not raw_val:
+                return {"success": False, "error": "Browser send failed — no response"}
+            outer = json.loads(raw_val)
+            status = int(outer.get("status") or 0)
+            body = outer.get("body") or ""
+            print(f"[linkedin] browser connection → HTTP {status}", flush=True)
+            if status in (200, 201):
+                return {"success": True}
+            if status == 429:
+                return {"success": False, "error": "Rate limited by LinkedIn — slow down and retry later"}
+            if status == 403:
+                return {"success": False, "error": "Auth error (403) — sign in again in Settings"}
+            if status == 400 and "CUSTOM_MESSAGE_TOO_LONG" in body:
+                return {"success": False, "error": "Connection note too long (max 300 chars)"}
+            if status == 400 and ("INVITATION_ALREADY_SENT" in body or "already" in body.lower()):
+                return {"success": False, "error": "Connection request already sent to this person"}
+            return {"success": False, "error": f"HTTP {status}: {body[:120]}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 
 async def send_connection_request(
     profile_id: str,
@@ -1631,12 +1843,13 @@ async def send_connection_request(
                 "profileId": profile_id
             }
         },
-        "message": note[:300],
+        "message": fit_connection_note(note),
     }
 
     hdrs = _headers(jsessionid)
     hdrs["Content-Type"] = "application/json"
 
+    result: Dict[str, Any] = {"success": False, "error": "Unknown error"}
     try:
         async with httpx.AsyncClient(
             timeout=15.0,
@@ -1652,30 +1865,48 @@ async def send_connection_request(
         print(f"[linkedin] connection request → HTTP {resp.status_code}", flush=True)
 
         if resp.is_redirect:
-            return {"success": False, "error": "Session expired — reconnect LinkedIn in Settings"}
-        if resp.status_code in (200, 201):
+            result = {"success": False, "error": "Session expired — reconnect LinkedIn in Settings"}
+        elif resp.status_code in (200, 201):
             return {"success": True}
-        if resp.status_code == 429:
-            return {"success": False, "error": "Rate limited by LinkedIn — slow down and retry later"}
-        if resp.status_code == 403:
+        elif resp.status_code == 429:
+            result = {"success": False, "error": "Rate limited by LinkedIn — slow down and retry later"}
+        elif resp.status_code == 403:
             body = resp.text[:200]
             if "FUSE" in body or "limit" in body.lower():
-                return {"success": False, "error": "LinkedIn weekly connection limit reached"}
-            return {
-                "success": False,
-                "error": "Auth error (403) — disconnect and use Sign in with LinkedIn in Settings",
-            }
-        if resp.status_code == 400:
+                result = {"success": False, "error": "LinkedIn weekly connection limit reached"}
+            else:
+                result = {
+                    "success": False,
+                    "error": "Auth error (403) — disconnect and use Sign in with LinkedIn in Settings",
+                }
+        elif resp.status_code == 400:
             detail = resp.text[:300]
             if "CUSTOM_MESSAGE_TOO_LONG" in detail:
-                return {"success": False, "error": "Connection note too long (max 300 chars)"}
-            if "INVITATION_ALREADY_SENT" in detail or "already" in detail.lower():
-                return {"success": False, "error": "Connection request already sent to this person"}
-            return {"success": False, "error": f"Bad request: {detail[:120]}"}
-        return {"success": False, "error": f"HTTP {resp.status_code}", "detail": resp.text[:300]}
+                result = {"success": False, "error": "Connection note too long (max 300 chars)"}
+            elif "INVITATION_ALREADY_SENT" in detail or "already" in detail.lower():
+                result = {"success": False, "error": "Connection request already sent to this person"}
+            else:
+                result = {"success": False, "error": f"Bad request: {detail[:120]}"}
+        else:
+            result = {"success": False, "error": f"HTTP {resp.status_code}", "detail": resp.text[:300]}
 
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        result = {"success": False, "error": str(e)}
+
+    err = (result.get("error") or "").lower()
+    if any(x in err for x in ("session", "expired", "auth", "403", "reconnect")):
+        print(f"[linkedin] httpx connection failed ({result.get('error')}), trying browser...", flush=True)
+        loop = asyncio.get_event_loop()
+        browser = await loop.run_in_executor(
+            _pw_executor, _send_connection_via_browser_sync, profile_id, note
+        )
+        if browser.get("success"):
+            return browser
+        return {
+            "success": False,
+            "error": browser.get("error") or result.get("error") or "Connection failed",
+        }
+    return result
 
 
 async def send_connection_request_from_session(

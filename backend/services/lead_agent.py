@@ -1,22 +1,18 @@
 """
 Lead generation agent — Serper → LinkedIn URLs → Proxycurl → Hunter → Claude score.
-Replaces Playwright-first path when SERPER_API_KEY is set.
 """
 import asyncio
 import json
 import os
 import uuid
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-from sqlalchemy import or_, select
-
-from database import AsyncSessionLocal
-from models import Lead, Search, Workspace, WorkspaceList, WorkspaceListLead
 from services.claude_service import client, MODEL
 from services.hunter_service import find_email
 from services.proxycurl_service import enrich_linkedin_profile
 from services.serper_service import extract_linkedin_urls, run_parallel_searches
+from store import get_store
 
 MAX_LEADS_PER_SEARCH = int(os.getenv("MAX_LEADS_PER_SEARCH", "50"))
 NUM_SERPER_QUERIES = 15
@@ -115,25 +111,14 @@ async def _enrich_one(url: str, sem: asyncio.Semaphore) -> Dict[str, Any]:
 async def _update_list_step(list_id: uuid.UUID, step: str, job: Optional[Dict[str, Any]] = None):
     if job is not None:
         job["step"] = step
-    async with AsyncSessionLocal() as db:
-        lr = await db.execute(select(WorkspaceList).where(WorkspaceList.id == list_id))
-        wl = lr.scalar_one_or_none()
-        if wl:
-            wl.build_step = step
-            await db.commit()
+    db = get_store()
+    wl = await db.get_workspace_list(list_id)
+    if wl:
+        await db.update("workspace_lists", list_id, {"build_step": step})
 
 
 async def _lead_exists(db, linkedin_url: str, email: str) -> bool:
-    q = select(Lead.id).limit(1)
-    filters = []
-    if linkedin_url:
-        filters.append(Lead.linkedin_url == linkedin_url)
-    if email:
-        filters.append(Lead.email == email)
-    if not filters:
-        return False
-    r = await db.execute(q.where(or_(*filters)))
-    return r.scalar_one_or_none() is not None
+    return await db.lead_exists_url_or_email(linkedin_url, email)
 
 
 async def run_agent_pipeline(
@@ -142,23 +127,34 @@ async def run_agent_pipeline(
     job: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Full 5-step agent; stores up to MAX_LEADS_PER_SEARCH in workspace list."""
-    lid = str(list_id)
     if job is not None:
         job["status"] = "running"
 
-    search_id = uuid.uuid4()
-    async with AsyncSessionLocal() as db:
-        lr = await db.execute(select(WorkspaceList).where(WorkspaceList.id == list_id))
-        wl = lr.scalar_one_or_none()
-        if not wl:
-            if job:
-                job["status"] = "failed"
-                job["error"] = "List not found"
-            return
-        wl.status = "building"
-        wl.icp_prompt = prompt
-        db.add(Search(id=search_id, prompt=prompt, list_id=list_id, status="running", created_at=datetime.utcnow()))
-        await db.commit()
+    search_id = str(uuid.uuid4())
+    db = get_store()
+    wl = await db.get_workspace_list(list_id)
+    if not wl:
+        if job:
+            job["status"] = "failed"
+            job["error"] = "List not found"
+        return
+
+    now = datetime.utcnow().isoformat()
+    await db.update(
+        "workspace_lists",
+        list_id,
+        {"status": "building", "icp_prompt": prompt, "updated_at": now},
+    )
+    await db.insert(
+        "searches",
+        {
+            "id": search_id,
+            "prompt": prompt,
+            "list_id": str(list_id),
+            "status": "running",
+            "created_at": now,
+        },
+    )
 
     try:
         await _update_list_step(list_id, "Generating search queries...", job)
@@ -175,11 +171,7 @@ async def run_agent_pipeline(
         await _update_list_step(list_id, f"Enriching {len(linkedin_urls)} leads...", job)
         sem = asyncio.Semaphore(5)
 
-        async with AsyncSessionLocal() as db:
-            old = await db.execute(select(WorkspaceListLead).where(WorkspaceListLead.list_id == list_id))
-            for row in old.scalars().all():
-                await db.delete(row)
-            await db.commit()
+        await db.delete_workspace_list_leads(list_id)
 
         enriched: List[Dict[str, Any]] = []
         saved = 0
@@ -191,52 +183,61 @@ async def run_agent_pipeline(
 
             li = (profile.get("linkedin_url") or "").strip()
             em = (profile.get("email") or "").strip()
-            async with AsyncSessionLocal() as db:
-                if await _lead_exists(db, li, em):
-                    await db.commit()
-                    continue
-                first = profile.get("first_name", "")
-                last = profile.get("last_name", "")
-                name = profile.get("name") or f"{first} {last}".strip()
-                lead_row = Lead(
-                    id=uuid.uuid4(),
-                    search_id=search_id,
-                    name=name,
-                    first_name=first,
-                    last_name=last,
-                    title=profile.get("title", ""),
-                    company=profile.get("company", ""),
-                    email=em,
-                    linkedin_url=li,
-                    icp_score=0,
-                    score_reason="",
-                    source_url=profile.get("source_url", li),
-                    sequence_status="new",
-                )
-                db.add(lead_row)
-                db.add(
-                    WorkspaceListLead(
-                        id=uuid.uuid4(),
-                        list_id=list_id,
-                        lead_id=lead_row.id,
-                        first_name=first,
-                        last_name=last,
-                        title=profile.get("title", "") or "",
-                        company=profile.get("company", "") or "",
-                        linkedin_url=li,
-                        icp_score=0,
-                        extra={"email": em},
-                        sort_order=sort_order,
-                    )
-                )
-                sort_order += 1
-                saved += 1
-                lr = await db.execute(select(WorkspaceList).where(WorkspaceList.id == list_id))
-                wl = lr.scalar_one_or_none()
-                if wl:
-                    wl.row_count = saved
-                    wl.build_step = f"Enriching leads… ({saved}/{len(linkedin_urls)})"
-                await db.commit()
+            if await _lead_exists(db, li, em):
+                continue
+
+            first = profile.get("first_name", "")
+            last = profile.get("last_name", "")
+            name = profile.get("name") or f"{first} {last}".strip()
+            lead_id = str(uuid.uuid4())
+            row_now = datetime.utcnow().isoformat()
+            await db.insert(
+                "leads",
+                {
+                    "id": lead_id,
+                    "search_id": search_id,
+                    "name": name,
+                    "first_name": first,
+                    "last_name": last,
+                    "title": profile.get("title", ""),
+                    "company": profile.get("company", ""),
+                    "email": em,
+                    "linkedin_url": li,
+                    "icp_score": 0,
+                    "score_reason": "",
+                    "source_url": profile.get("source_url", li),
+                    "sequence_status": "new",
+                    "created_at": row_now,
+                    "updated_at": row_now,
+                },
+            )
+            await db.insert(
+                "workspace_list_leads",
+                {
+                    "id": str(uuid.uuid4()),
+                    "list_id": str(list_id),
+                    "lead_id": lead_id,
+                    "first_name": first,
+                    "last_name": last,
+                    "title": profile.get("title", "") or "",
+                    "company": profile.get("company", "") or "",
+                    "linkedin_url": li,
+                    "icp_score": 0,
+                    "extra": {"email": em},
+                    "sort_order": sort_order,
+                    "created_at": row_now,
+                },
+            )
+            sort_order += 1
+            saved += 1
+            await db.update(
+                "workspace_lists",
+                list_id,
+                {
+                    "row_count": saved,
+                    "build_step": f"Enriching leads… ({saved}/{len(linkedin_urls)})",
+                },
+            )
 
             if job is not None:
                 job["count"] = saved
@@ -246,39 +247,47 @@ async def run_agent_pipeline(
         await score_leads_batch(prompt, enriched)
         score_by_url = {(p.get("linkedin_url") or "").lower(): p for p in enriched}
 
-        async with AsyncSessionLocal() as db:
-            rr = await db.execute(
-                select(WorkspaceListLead, Lead)
-                .join(Lead, Lead.id == WorkspaceListLead.lead_id)
-                .where(WorkspaceListLead.list_id == list_id)
+        pairs = await db.list_workspace_list_leads_joined(list_id)
+        for wl_row, lead_row in pairs:
+            if not lead_row:
+                continue
+            key = (wl_row.linkedin_url or "").lower()
+            s = score_by_url.get(key, {})
+            sc = int(s.get("icp_score", 5))
+            reason = s.get("score_reason", "")
+            await db.update(
+                "workspace_list_leads",
+                wl_row.id,
+                {
+                    "icp_score": sc,
+                    "extra": {**(wl_row.extra or {}), "score_reason": reason},
+                },
             )
-            for wl_row, lead_row in rr.all():
-                key = (wl_row.linkedin_url or "").lower()
-                s = score_by_url.get(key, {})
-                sc = int(s.get("icp_score", 5))
-                reason = s.get("score_reason", "")
-                wl_row.icp_score = sc
-                wl_row.extra = {**(wl_row.extra or {}), "score_reason": reason}
-                lead_row.icp_score = sc
-                lead_row.score_reason = reason
+            await db.update(
+                "leads",
+                lead_row.id,
+                {"icp_score": sc, "score_reason": reason, "updated_at": datetime.utcnow().isoformat()},
+            )
 
-            lr = await db.execute(select(WorkspaceList).where(WorkspaceList.id == list_id))
-            wl = lr.scalar_one_or_none()
-            sr = await db.execute(select(Search).where(Search.id == search_id))
-            search = sr.scalar_one_or_none()
-            if wl:
-                wl.status = "ready"
-                wl.row_count = saved
-                wl.build_step = f"Done — {saved} leads"
-                wl.updated_at = datetime.utcnow()
-            if search:
-                search.status = "completed"
-            if wl:
-                wr = await db.execute(select(Workspace).where(Workspace.id == wl.workspace_id))
-                ws = wr.scalar_one_or_none()
-                if ws:
-                    ws.updated_at = datetime.utcnow()
-            await db.commit()
+        done_now = datetime.utcnow().isoformat()
+        await db.update(
+            "workspace_lists",
+            list_id,
+            {
+                "status": "ready",
+                "row_count": saved,
+                "build_step": f"Done — {saved} leads",
+                "updated_at": done_now,
+            },
+        )
+        await db.update_search(search_id, status="completed")
+        wl = await db.get_workspace_list(list_id)
+        if wl:
+            await db.update(
+                "workspaces",
+                wl.workspace_id,
+                {"updated_at": done_now},
+            )
 
         if job:
             job["status"] = "completed"
@@ -290,14 +299,13 @@ async def run_agent_pipeline(
         if job:
             job["status"] = "failed"
             job["error"] = str(e)[:200]
-        async with AsyncSessionLocal() as db:
-            lr = await db.execute(select(WorkspaceList).where(WorkspaceList.id == list_id))
-            wl = lr.scalar_one_or_none()
-            if wl:
-                wl.status = "failed"
-                wl.build_step = str(e)[:200]
-            sr = await db.execute(select(Search).where(Search.id == search_id))
-            search = sr.scalar_one_or_none()
-            if search:
-                search.status = "failed"
-            await db.commit()
+        wl = await db.get_workspace_list(list_id)
+        if wl:
+            await db.update(
+                "workspace_lists",
+                list_id,
+                {"status": "failed", "build_step": str(e)[:200]},
+            )
+        search = await db.get_search(search_id)
+        if search:
+            await db.update_search(search_id, status="failed")

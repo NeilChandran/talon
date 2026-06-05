@@ -4,10 +4,6 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from sqlalchemy import select
-
-from database import AsyncSessionLocal
-from models import Lead, Search, Workspace, WorkspaceList, WorkspaceListLead
 from services.lead_agent import _lead_exists
 from services.origami_service import (
     create_agent_run,
@@ -16,6 +12,7 @@ from services.origami_service import (
     map_origami_row,
     poll_run_until_done,
 )
+from store import get_store
 
 
 async def _save_rows(
@@ -25,58 +22,62 @@ async def _save_rows(
     *,
     replace: bool,
 ) -> int:
+    db = get_store()
+    if replace:
+        await db.delete_workspace_list_leads(list_id)
+
     saved = 0
-    async with AsyncSessionLocal() as db:
-        if replace:
-            old = await db.execute(select(WorkspaceListLead).where(WorkspaceListLead.list_id == list_id))
-            for row in old.scalars().all():
-                await db.delete(row)
+    now = datetime.utcnow().isoformat()
+    for i, raw in enumerate(rows):
+        p = map_origami_row(raw if isinstance(raw, dict) else {})
+        li = p.get("linkedin_url", "")
+        em = p.get("email", "")
+        if await _lead_exists(db, li, em) and not replace:
+            continue
+        first, last = p.get("first_name", ""), p.get("last_name", "")
+        lead_id = str(uuid.uuid4())
+        await db.insert(
+            "leads",
+            {
+                "id": lead_id,
+                "search_id": str(search_id),
+                "name": p.get("name", ""),
+                "first_name": first,
+                "last_name": last,
+                "title": p.get("title", ""),
+                "company": p.get("company", ""),
+                "email": em,
+                "linkedin_url": li,
+                "icp_score": p.get("icp_score", 7),
+                "score_reason": p.get("score_reason", ""),
+                "source_url": p.get("source_url", li),
+                "sequence_status": "new",
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        await db.insert(
+            "workspace_list_leads",
+            {
+                "id": str(uuid.uuid4()),
+                "list_id": str(list_id),
+                "lead_id": lead_id,
+                "first_name": first,
+                "last_name": last,
+                "title": p.get("title", ""),
+                "company": p.get("company", ""),
+                "linkedin_url": li,
+                "icp_score": p.get("icp_score", 7),
+                "extra": {"email": em, "score_reason": p.get("score_reason", ""), "source": "origami"},
+                "sort_order": i,
+                "created_at": now,
+            },
+        )
+        saved += 1
 
-        for i, raw in enumerate(rows):
-            p = map_origami_row(raw if isinstance(raw, dict) else {})
-            li = p.get("linkedin_url", "")
-            em = p.get("email", "")
-            if await _lead_exists(db, li, em) and not replace:
-                continue
-            first, last = p.get("first_name", ""), p.get("last_name", "")
-            lead_row = Lead(
-                id=uuid.uuid4(),
-                search_id=search_id,
-                name=p.get("name", ""),
-                first_name=first,
-                last_name=last,
-                title=p.get("title", ""),
-                company=p.get("company", ""),
-                email=em,
-                linkedin_url=li,
-                icp_score=p.get("icp_score", 7),
-                score_reason=p.get("score_reason", ""),
-                source_url=p.get("source_url", li),
-                sequence_status="new",
-            )
-            db.add(lead_row)
-            db.add(
-                WorkspaceListLead(
-                    id=uuid.uuid4(),
-                    list_id=list_id,
-                    lead_id=lead_row.id,
-                    first_name=first,
-                    last_name=last,
-                    title=p.get("title", ""),
-                    company=p.get("company", ""),
-                    linkedin_url=li,
-                    icp_score=p.get("icp_score", 7),
-                    extra={"email": em, "score_reason": p.get("score_reason", ""), "source": "origami"},
-                    sort_order=i,
-                )
-            )
-            saved += 1
-
-        lr = await db.execute(select(WorkspaceList).where(WorkspaceList.id == list_id))
-        wl = lr.scalar_one_or_none()
-        if wl:
-            wl.row_count = saved
-        await db.commit()
+    wl = await db.get_workspace_list(list_id)
+    if wl:
+        await db.update("workspace_lists", list_id, {"row_count": saved})
     return saved
 
 
@@ -88,19 +89,35 @@ async def run_origami_list_build(
     lid = str(list_id)
     search_id = uuid.uuid4()
 
-    async with AsyncSessionLocal() as db:
-        lr = await db.execute(select(WorkspaceList).where(WorkspaceList.id == list_id))
-        wl = lr.scalar_one_or_none()
-        if not wl:
-            if job:
-                job["status"] = "failed"
-                job["error"] = "List not found"
-            return
-        wl.status = "building"
-        wl.build_step = "Starting Origami agent…"
-        wl.icp_prompt = prompt
-        db.add(Search(id=search_id, prompt=prompt, list_id=list_id, status="running", created_at=datetime.utcnow()))
-        await db.commit()
+    db = get_store()
+    wl = await db.get_workspace_list(list_id)
+    if not wl:
+        if job:
+            job["status"] = "failed"
+            job["error"] = "List not found"
+        return
+
+    now = datetime.utcnow().isoformat()
+    await db.update(
+        "workspace_lists",
+        list_id,
+        {
+            "status": "building",
+            "build_step": "Starting Origami agent…",
+            "icp_prompt": prompt,
+            "updated_at": now,
+        },
+    )
+    await db.insert(
+        "searches",
+        {
+            "id": str(search_id),
+            "prompt": prompt,
+            "list_id": str(list_id),
+            "status": "running",
+            "created_at": now,
+        },
+    )
 
     agent_id: Optional[str] = None
     run_id: Optional[str] = None
@@ -116,12 +133,10 @@ async def run_origami_list_build(
         }.get(status, f"Origami: {status}")
         if job:
             job["step"] = step
-        async with AsyncSessionLocal() as db:
-            lr = await db.execute(select(WorkspaceList).where(WorkspaceList.id == list_id))
-            wl = lr.scalar_one_or_none()
-            if wl:
-                wl.build_step = step
-                await db.commit()
+        store = get_store()
+        wl_tick = await store.get_workspace_list(list_id)
+        if wl_tick:
+            await store.update("workspace_lists", list_id, {"build_step": step})
         tbl = extract_primary_table(run)
         if tbl and tbl.get("id"):
             table_id = tbl["id"]
@@ -165,7 +180,6 @@ async def run_origami_list_build(
 
         tbl = extract_primary_table(terminal)
         if not tbl or not tbl.get("id"):
-            # Recipe 6 recovery
             from services.origami_service import ORIGAMI_BASE, _headers
             import httpx
 
@@ -192,7 +206,6 @@ async def run_origami_list_build(
             job["step"] = "Enriching leads…"
         await _update_step(list_id, "Enriching leads…", job)
 
-        # Wait for cells if still running
         cells_running = (tbl.get("cells") or {}).get("running", 0)
         if cells_running > 0:
             await _update_step(list_id, f"Enriching leads… ({cells_running} cells still loading)", job)
@@ -214,30 +227,27 @@ async def run_origami_list_build(
 
         saved = await _save_rows(list_id, search_id, rows, replace=True)
 
-        async with AsyncSessionLocal() as db:
-            lr = await db.execute(select(WorkspaceList).where(WorkspaceList.id == list_id))
-            wl = lr.scalar_one_or_none()
-            sr = await db.execute(select(Search).where(Search.id == search_id))
-            search = sr.scalar_one_or_none()
-            if wl:
-                wl.status = "ready"
-                wl.row_count = saved
-                wl.build_step = f"Done — {saved} leads (Origami)"
-                wl.origami_meta = {
+        done_now = datetime.utcnow().isoformat()
+        await db.update(
+            "workspace_lists",
+            list_id,
+            {
+                "status": "ready",
+                "row_count": saved,
+                "build_step": f"Done — {saved} leads (Origami)",
+                "origami_meta": {
                     "agentId": agent_id,
                     "tableId": table_id,
                     "tableUrl": table_url,
                     "runId": run_id,
-                }
-                wl.updated_at = datetime.utcnow()
-            if search:
-                search.status = "completed"
-            if wl:
-                wr = await db.execute(select(Workspace).where(Workspace.id == wl.workspace_id))
-                ws = wr.scalar_one_or_none()
-                if ws:
-                    ws.updated_at = datetime.utcnow()
-            await db.commit()
+                },
+                "updated_at": done_now,
+            },
+        )
+        await db.update_search(search_id, status="completed")
+        wl = await db.get_workspace_list(list_id)
+        if wl:
+            await db.update("workspaces", wl.workspace_id, {"updated_at": done_now})
 
         if job:
             job["status"] = "completed"
@@ -250,21 +260,19 @@ async def run_origami_list_build(
         if job:
             job["status"] = "failed"
             job["error"] = str(e)[:200]
-        async with AsyncSessionLocal() as db:
-            lr = await db.execute(select(WorkspaceList).where(WorkspaceList.id == list_id))
-            wl = lr.scalar_one_or_none()
-            if wl:
-                wl.status = "failed"
-                wl.build_step = str(e)[:200]
-            await db.commit()
+        wl = await db.get_workspace_list(list_id)
+        if wl:
+            await db.update(
+                "workspace_lists",
+                list_id,
+                {"status": "failed", "build_step": str(e)[:200]},
+            )
 
 
 async def _update_step(list_id: uuid.UUID, step: str, job: Optional[Dict[str, Any]]):
     if job is not None:
         job["step"] = step
-    async with AsyncSessionLocal() as db:
-        lr = await db.execute(select(WorkspaceList).where(WorkspaceList.id == list_id))
-        wl = lr.scalar_one_or_none()
-        if wl:
-            wl.build_step = step
-            await db.commit()
+    db = get_store()
+    wl = await db.get_workspace_list(list_id)
+    if wl:
+        await db.update("workspace_lists", list_id, {"build_step": step})

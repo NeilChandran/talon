@@ -8,12 +8,8 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from database import AsyncSessionLocal
-from models import Campaign, CampaignEnrollment, Lead, LinkedInOutreachLog
 from services.claude_service import generate_linkedin_connection_note, generate_linkedin_message
+from services.outreach_templates import fit_connection_note, lead_first_name, personalize_connection
 from services.linkedin_service import (
     check_connection_accepted,
     human_delay,
@@ -26,17 +22,19 @@ from services.linkedin_service import (
     save_session,
 )
 from services.send_cap import increment_count, is_capped
+from store import Record, get_store
 
 
-def _personalize(template: str, lead: Lead) -> str:
-    first_name = (lead.name or "there").split()[0]
-    return (
-        template.replace("{{first_name}}", first_name)
-        .replace("{{company}}", lead.company or "your company")
+def _personalize(template: str, lead: Record) -> str:
+    return personalize_connection(
+        template,
+        first_name=lead_first_name(lead),
+        company=lead.company or "",
+        title=lead.title or "",
     )
 
 
-async def _resolve_lead(lead: Lead, sess: dict) -> Lead:
+async def _resolve_lead(lead: Record, sess: dict) -> Record:
     if lead.linkedin_profile_id or not lead.linkedin_url:
         return lead
     ids = await resolve_lead_ids(
@@ -45,42 +43,46 @@ async def _resolve_lead(lead: Lead, sess: dict) -> Lead:
         jsessionid=sess.get("jsessionid", "ajax:0"),
         bcookie=sess.get("bcookie", ""),
         bscookie=sess.get("bscookie", ""),
-    )  # profile lookup uses core cookies; sends use full session via from_session helpers
+    )
     if ids:
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(select(Lead).where(Lead.id == lead.id))
-            db_lead = result.scalar_one_or_none()
-            if db_lead:
-                db_lead.linkedin_profile_id = ids["linkedin_profile_id"]
-                db_lead.linkedin_member_id = ids["linkedin_member_id"]
-                db_lead.updated_at = datetime.utcnow()
-                await db.commit()
+        db = get_store()
+        await db.update_lead(
+            lead.id,
+            linkedin_profile_id=ids["linkedin_profile_id"],
+            linkedin_member_id=ids["linkedin_member_id"],
+        )
         lead.linkedin_profile_id = ids["linkedin_profile_id"]
         lead.linkedin_member_id = ids["linkedin_member_id"]
     return lead
 
 
 async def _log(lead_id: str, campaign_id: str, outreach_type: str, content: str, status: str, error: str = None):
-    async with AsyncSessionLocal() as db:
-        db.add(
-            LinkedInOutreachLog(
-                id=uuid.uuid4(),
-                lead_id=uuid.UUID(lead_id),
-                sequence_id=None,
-                outreach_type=outreach_type,
-                content=content,
-                status=status,
-                error=error,
-                sent_at=datetime.utcnow() if status == "sent" else None,
-            )
-        )
-        await db.commit()
+    db = get_store()
+    await db.insert_outreach_log({
+        "lead_id": lead_id,
+        "outreach_type": outreach_type,
+        "content": content,
+        "status": status,
+        "error": error,
+        "sent_at": datetime.utcnow().isoformat() if status == "sent" else None,
+    })
+
+
+def _parse_dt(val) -> Optional[datetime]:
+    if not val:
+        return None
+    if isinstance(val, datetime):
+        return val
+    try:
+        return datetime.fromisoformat(str(val).replace("Z", "+00:00").replace("+00:00", ""))
+    except ValueError:
+        return None
 
 
 async def process_enrollment(
-    enrollment: CampaignEnrollment,
-    campaign: Campaign,
-    lead: Lead,
+    enrollment: Record,
+    campaign: Record,
+    lead: Record,
     sess: dict,
 ) -> Dict[str, Any]:
     """Advance one enrollment by at most one step. Returns {action, success, error}."""
@@ -102,7 +104,6 @@ async def process_enrollment(
 
     status = enrollment.status
 
-    # Already replied via lead table
     if lead.status == "replied":
         enrollment.status = "replied"
         return {"action": "skip", "success": True}
@@ -110,15 +111,14 @@ async def process_enrollment(
     if status in ("replied", "completed", "stopped"):
         return {"action": "skip", "success": True}
 
-    if status == "pending":
+    if status in ("pending", "drafted"):
         if is_capped():
             return {"action": "cap", "success": False, "error": "Daily LinkedIn send cap reached"}
 
-        note_tpl = campaign.connection_note_template or ""
-        if note_tpl.strip():
-            note = _personalize(note_tpl, lead)[:300]
-        elif enrollment.connection_note:
-            note = enrollment.connection_note[:300]
+        if enrollment.connection_note and enrollment.connection_note.strip():
+            note = fit_connection_note(enrollment.connection_note)
+        elif (campaign.connection_note_template or "").strip():
+            note = _personalize(campaign.connection_note_template, lead)
         else:
             note = await generate_linkedin_connection_note(lead_data)
 
@@ -131,17 +131,13 @@ async def process_enrollment(
         enrollment.connection_note = note
         if resp["success"]:
             enrollment.status = "connection_sent"
-            enrollment.connection_sent_at = datetime.utcnow()
+            enrollment.connection_sent_at = datetime.utcnow().isoformat()
             enrollment.last_error = None
             increment_count()
             await _log(str(lead.id), str(campaign.id), "connection_request", note, "sent")
-            async with AsyncSessionLocal() as db:
-                r = await db.execute(select(Lead).where(Lead.id == lead.id))
-                l = r.scalar_one_or_none()
-                if l and l.status == "new":
-                    l.status = "contacted"
-                    l.updated_at = datetime.utcnow()
-                    await db.commit()
+            if lead.status == "new":
+                db = get_store()
+                await db.update_lead(lead.id, status="contacted")
             return {"action": "connection", "success": True}
         enrollment.status = "failed"
         enrollment.last_error = resp.get("error", "Connection failed")
@@ -159,7 +155,7 @@ async def process_enrollment(
         if not accepted:
             return {"action": "wait_accept", "success": True}
 
-        enrollment.accepted_at = datetime.utcnow()
+        enrollment.accepted_at = datetime.utcnow().isoformat()
         enrollment.status = "accepted"
 
         if lead.status == "replied":
@@ -167,10 +163,11 @@ async def process_enrollment(
             return {"action": "replied", "success": True}
 
         wait_days = campaign.wait_days_after_accept or 1
-        if enrollment.accepted_at and datetime.utcnow() < enrollment.accepted_at + timedelta(days=wait_days):
+        accepted_dt = _parse_dt(enrollment.accepted_at)
+        if accepted_dt and datetime.utcnow() < accepted_dt + timedelta(days=wait_days):
             return {"action": "wait_delay", "success": True}
 
-        status = "accepted"  # fall through to send DM
+        status = "accepted"
 
     if status == "accepted":
         msg_tpl = campaign.message_template or ""
@@ -189,7 +186,7 @@ async def process_enrollment(
         enrollment.follow_up_message = message
         if resp["success"]:
             enrollment.status = "completed"
-            enrollment.dm_sent_at = datetime.utcnow()
+            enrollment.dm_sent_at = datetime.utcnow().isoformat()
             enrollment.last_error = None
             await _log(str(lead.id), str(campaign.id), "message", message, "sent")
             return {"action": "message", "success": True}
@@ -204,8 +201,20 @@ async def process_enrollment(
     return {"action": "none", "success": True}
 
 
-# In-memory campaign jobs (like sequence automation)
 campaign_jobs: Dict[str, Any] = {}
+
+
+def _enrollment_patch(enrollment: Record) -> dict:
+    return {
+        "status": enrollment.status,
+        "connection_note": enrollment.connection_note,
+        "follow_up_message": enrollment.follow_up_message,
+        "connection_sent_at": enrollment.connection_sent_at,
+        "accepted_at": enrollment.accepted_at,
+        "dm_sent_at": enrollment.dm_sent_at,
+        "last_error": enrollment.last_error,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
 
 
 async def run_campaign_job(job_id: str, campaign_id: str, enrollment_ids: Optional[list] = None):
@@ -217,6 +226,42 @@ async def run_campaign_job(job_id: str, campaign_id: str, enrollment_ids: Option
         job["error"] = "No LinkedIn session — connect in Settings"
         return
 
+    db = get_store()
+    campaign = await db.select_one("campaigns", campaign_id)
+    if not campaign:
+        job["status"] = "failed"
+        job["error"] = "Campaign not found"
+        return
+
+    filters = {"campaign_id": str(campaign_id)}
+    enrollments = await db.select_many(
+        "campaign_enrollments",
+        filters=filters,
+        in_filters={"status": ["drafted", "pending", "connection_sent", "accepted"]},
+    )
+    if enrollment_ids:
+        allowed = {str(e) for e in enrollment_ids}
+        enrollments = [e for e in enrollments if str(e.id) in allowed]
+
+    launchable = []
+    for enr in enrollments:
+        if enr.status in ("connection_sent", "accepted"):
+            launchable.append(enr)
+            continue
+        if enr.status not in ("drafted", "pending"):
+            continue
+        if not (enr.connection_note or "").strip():
+            continue
+        launchable.append(enr)
+    enrollments = launchable
+
+    job["total"] = len(enrollments)
+    if not enrollments:
+        job["status"] = "failed"
+        job["error"] = "No drafted sequences with connection notes to launch"
+        return
+
+    job["step"] = "Verifying LinkedIn session..."
     check = await validate_session(
         sess["li_at"],
         sess.get("jsessionid", "ajax:0"),
@@ -224,53 +269,31 @@ async def run_campaign_job(job_id: str, campaign_id: str, enrollment_ids: Option
         sess.get("bscookie", ""),
         _extra_cookies_from_session(sess),
     )
-    if not check.get("valid"):
-        job["status"] = "failed"
-        job["error"] = check.get("error", "LinkedIn session invalid — reconnect in Settings")
-        return
-    if check.get("jsessionid"):
-        save_session(
-            sess["li_at"],
-            check["jsessionid"],
-            {"name": check.get("name", sess.get("name", "LinkedIn User"))},
-            bcookie=sess.get("bcookie", ""),
-            bscookie=sess.get("bscookie", ""),
-            extra=_extra_cookies_from_session(sess),
+    if check.get("valid"):
+        if check.get("jsessionid"):
+            save_session(
+                sess["li_at"],
+                check["jsessionid"],
+                {"name": check.get("name", sess.get("name", "LinkedIn User"))},
+                bcookie=sess.get("bcookie", ""),
+                bscookie=sess.get("bscookie", ""),
+                extra=_extra_cookies_from_session(sess),
+            )
+            sess = load_session() or sess
+    else:
+        job["step"] = "Session check failed — trying browser send..."
+        print(
+            f"[campaign] validate_session failed: {check.get('error')} — continuing",
+            flush=True,
         )
-        sess = load_session() or sess
-
-    async with AsyncSessionLocal() as db:
-        camp_r = await db.execute(select(Campaign).where(Campaign.id == uuid.UUID(campaign_id)))
-        campaign = camp_r.scalar_one_or_none()
-        if not campaign:
-            job["status"] = "failed"
-            job["error"] = "Campaign not found"
-            return
-
-        q = select(CampaignEnrollment).where(
-            CampaignEnrollment.campaign_id == campaign.id,
-            CampaignEnrollment.status.in_(["pending", "connection_sent", "accepted"]),
-        )
-        if enrollment_ids:
-            q = q.where(CampaignEnrollment.id.in_([uuid.UUID(e) for e in enrollment_ids]))
-        result = await db.execute(q)
-        enrollments = list(result.scalars().all())
-
-    job["total"] = len(enrollments)
     job["done"] = 0
     job["sent"] = 0
     job["failed"] = 0
 
     for enr in enrollments:
-        async with AsyncSessionLocal() as db:
-            enr_r = await db.execute(
-                select(CampaignEnrollment).where(CampaignEnrollment.id == enr.id)
-            )
-            enrollment = enr_r.scalar_one_or_none()
-            camp_r = await db.execute(select(Campaign).where(Campaign.id == campaign.id))
-            campaign = camp_r.scalar_one_or_none()
-            lead_r = await db.execute(select(Lead).where(Lead.id == enrollment.lead_id))
-            lead = lead_r.scalar_one_or_none()
+        enrollment = await db.select_one("campaign_enrollments", enr.id)
+        campaign = await db.select_one("campaigns", campaign_id)
+        lead = await db.select_one("leads", enrollment.lead_id) if enrollment else None
 
         if not enrollment or not lead or not campaign:
             job["done"] += 1
@@ -282,8 +305,13 @@ async def run_campaign_job(job_id: str, campaign_id: str, enrollment_ids: Option
         try:
             outcome = await process_enrollment(enrollment, campaign, lead, sess)
             if outcome.get("action") == "cap":
+                remaining = len(enrollments) - job["done"]
                 job["status"] = "paused"
-                job["error"] = outcome.get("error")
+                job["error"] = (
+                    f"{outcome.get('error')} — {job['sent']} sent, {remaining} remaining. "
+                    "Run Launch all again tomorrow."
+                )
+                job["step"] = job["error"]
                 break
             if outcome.get("success") and outcome.get("action") in ("connection", "message"):
                 job["sent"] += 1
@@ -294,21 +322,7 @@ async def run_campaign_job(job_id: str, campaign_id: str, enrollment_ids: Option
             enrollment.status = "failed"
             job["failed"] += 1
 
-        async with AsyncSessionLocal() as db:
-            enr_r = await db.execute(
-                select(CampaignEnrollment).where(CampaignEnrollment.id == enrollment.id)
-            )
-            db_enr = enr_r.scalar_one_or_none()
-            if db_enr:
-                db_enr.status = enrollment.status
-                db_enr.connection_note = enrollment.connection_note
-                db_enr.follow_up_message = enrollment.follow_up_message
-                db_enr.connection_sent_at = enrollment.connection_sent_at
-                db_enr.accepted_at = enrollment.accepted_at
-                db_enr.dm_sent_at = enrollment.dm_sent_at
-                db_enr.last_error = enrollment.last_error
-                db_enr.updated_at = datetime.utcnow()
-                await db.commit()
+        await db.update("campaign_enrollments", enrollment.id, _enrollment_patch(enrollment))
 
         job["done"] += 1
         if job["done"] < len(enrollments):
@@ -326,45 +340,31 @@ async def sync_campaign_enrollments(campaign_id: str) -> Dict[str, int]:
     if not sess:
         return {"processed": 0, "error": "no session"}
 
+    db = get_store()
+    campaign = await db.select_one("campaigns", campaign_id)
+    if not campaign:
+        return {"processed": 0}
+
+    enrollments = await db.select_many(
+        "campaign_enrollments",
+        filters={"campaign_id": str(campaign_id)},
+        in_filters={"status": ["connection_sent", "accepted"]},
+    )
+
     updated = 0
-    async with AsyncSessionLocal() as db:
-        camp_r = await db.execute(select(Campaign).where(Campaign.id == uuid.UUID(campaign_id)))
-        campaign = camp_r.scalar_one_or_none()
-        if not campaign:
-            return {"processed": 0}
-
-        result = await db.execute(
-            select(CampaignEnrollment).where(
-                CampaignEnrollment.campaign_id == campaign.id,
-                CampaignEnrollment.status.in_(["connection_sent", "accepted"]),
-            )
-        )
-        enrollments = list(result.scalars().all())
-
     for enr in enrollments:
-        async with AsyncSessionLocal() as db:
-            enr_r = await db.execute(select(CampaignEnrollment).where(CampaignEnrollment.id == enr.id))
-            enrollment = enr_r.scalar_one_or_none()
-            lead_r = await db.execute(select(Lead).where(Lead.id == enrollment.lead_id))
-            lead = lead_r.scalar_one_or_none()
-            camp_r = await db.execute(select(Campaign).where(Campaign.id == campaign.id))
-            campaign = camp_r.scalar_one_or_none()
+        enrollment = await db.select_one("campaign_enrollments", enr.id)
+        lead = await db.select_one("leads", enrollment.lead_id) if enrollment else None
+        campaign = await db.select_one("campaigns", campaign_id)
+
+        if not enrollment or not lead or not campaign:
+            continue
 
         before = enrollment.status
         await process_enrollment(enrollment, campaign, lead, sess)
         if enrollment.status != before:
             updated += 1
 
-        async with AsyncSessionLocal() as db:
-            enr_r = await db.execute(select(CampaignEnrollment).where(CampaignEnrollment.id == enrollment.id))
-            db_enr = enr_r.scalar_one_or_none()
-            if db_enr:
-                db_enr.status = enrollment.status
-                db_enr.accepted_at = enrollment.accepted_at
-                db_enr.dm_sent_at = enrollment.dm_sent_at
-                db_enr.follow_up_message = enrollment.follow_up_message
-                db_enr.last_error = enrollment.last_error
-                db_enr.updated_at = datetime.utcnow()
-                await db.commit()
+        await db.update("campaign_enrollments", enrollment.id, _enrollment_patch(enrollment))
 
     return {"processed": len(enrollments), "updated": updated}

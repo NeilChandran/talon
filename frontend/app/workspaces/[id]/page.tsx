@@ -266,7 +266,7 @@ function WorkspaceInner() {
                 {rows.length} leads · 8 columns
                 {listDetail?.status === "building" && ` · Running search agents… ${listDetail.build_step}`}
                 {listDetail?.origami_meta?.tableUrl && (
-                  <> · <a href={listDetail.origami_meta.tableUrl} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)" }}>Open in Origami</a></>
+                  <> · <a href={listDetail.origami_meta.tableUrl} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)" }}>Open source table</a></>
                 )}
               </p>
             </div>
