@@ -149,7 +149,7 @@ User prompt
 | Origami.chat | UI/UX inspiration + API integration | Talon is a custom frontend and orchestration layer calling Origami v2 — not a fork |
 | Next.js, FastAPI, Supabase | Open-source frameworks | Standard usage |
 | Anthropic API | Managed AI service | Structured prompting for outreach personalization |
-| subha@talon.ai | Early commits | GTM/outbound foundation (see git history) |
+
 
 **Major decisions:**
 - Used Origami for sending rather than building LinkedIn automation — avoids ToS risk while keeping operator UX inside Talon
