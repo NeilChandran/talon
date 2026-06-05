@@ -18,8 +18,9 @@ from services.linkedin_service import (
     human_delay,
     load_session,
     resolve_lead_ids,
-    send_connection_request,
-    send_message,
+    send_connection_request_from_session,
+    send_message_from_session,
+    validate_session,
 )
 from services.send_cap import get_remaining, increment_count, is_capped, get_status as cap_status
 from services.reply_service import check_replies_for_leads
@@ -177,26 +178,30 @@ async def _run_automation(job_id: str, lead_ids: List[str], sequence_id: str):
         job["error"] = "No LinkedIn session — connect your account in Settings first"
         return
 
-    # Pre-flight: verify session is still valid via Voyager API (fast, no browser)
     job["step"] = "Verifying LinkedIn session..."
-    try:
-        import httpx
-        async with httpx.AsyncClient(
-            headers={
-                "cookie": f"li_at={sess['li_at']}; JSESSIONID=\"{sess.get('jsessionid','ajax:0')}\";",
-                "csrf-token": sess.get("jsessionid", "ajax:0").strip('"'),
-                "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-            },
-            timeout=10,
-            follow_redirects=False,
-        ) as c:
-            r = await c.get("https://www.linkedin.com/voyager/api/me")
-            if r.is_redirect or r.status_code in (401, 403):
-                job["status"] = "failed"
-                job["error"] = "LinkedIn session expired — go to Settings and sign in again"
-                return
-    except Exception:
-        pass  # Network issue — let it proceed and fail naturally
+    from services.linkedin_service import _extra_cookies_from_session, save_session
+
+    check = await validate_session(
+        sess["li_at"],
+        sess.get("jsessionid", "ajax:0"),
+        sess.get("bcookie", ""),
+        sess.get("bscookie", ""),
+        _extra_cookies_from_session(sess),
+    )
+    if not check.get("valid"):
+        job["status"] = "failed"
+        job["error"] = check.get("error", "LinkedIn session expired — go to Settings and sign in again")
+        return
+    if check.get("jsessionid") and check["jsessionid"] != sess.get("jsessionid"):
+        save_session(
+            sess["li_at"],
+            check["jsessionid"],
+            {"name": check.get("name", sess.get("name")), "headline": check.get("headline", "")},
+            bcookie=sess.get("bcookie", ""),
+            bscookie=sess.get("bscookie", ""),
+            extra=_extra_cookies_from_session(sess),
+        )
+        sess = load_session() or sess
 
     async with AsyncSessionLocal() as db:
         seq_result = await db.execute(
@@ -280,14 +285,7 @@ async def _run_automation(job_id: str, lead_ids: List[str], sequence_id: str):
 
                 if lead.linkedin_profile_id:
                     job["step"] = f"Sending connection request to {lead.name}..."
-                    resp = await send_connection_request(
-                        profile_id=lead.linkedin_profile_id,
-                        note=note,
-                        li_at=sess["li_at"],
-                        jsessionid=sess.get("jsessionid", "ajax:0"),
-                        bcookie=sess.get("bcookie", ""),
-                        bscookie=sess.get("bscookie", ""),
-                    )
+                    resp = await send_connection_request_from_session(sess, lead.linkedin_profile_id, note)
                     if resp["success"]:
                         result_entry["status"] = "sent"
                         result_entry["content"] = note
@@ -320,14 +318,7 @@ async def _run_automation(job_id: str, lead_ids: List[str], sequence_id: str):
 
                 if lead.linkedin_member_id:
                     job["step"] = f"Sending message to {lead.name}..."
-                    resp = await send_message(
-                        member_id=lead.linkedin_member_id,
-                        message=message_text,
-                        li_at=sess["li_at"],
-                        jsessionid=sess.get("jsessionid", "ajax:0"),
-                        bcookie=sess.get("bcookie", ""),
-                        bscookie=sess.get("bscookie", ""),
-                    )
+                    resp = await send_message_from_session(sess, lead.linkedin_member_id, message_text)
                     if resp["success"]:
                         result_entry["status"] = "sent"
                         result_entry["content"] = message_text

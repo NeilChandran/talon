@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { connectLinkedIn, disconnectLinkedIn, getLinkedInStatus, loginWithLinkedInBrowser } from "@/lib/api";
+import { connectLinkedIn, disconnectLinkedIn, getAppSettings, getLinkedInStatus, loginWithLinkedInBrowser, testLinkedInSession, updateAppSettings } from "@/lib/api";
+import type { AppSettings } from "@/types";
 import { peek, put, invalidate } from "@/lib/cache";
 import type { LinkedInSession } from "@/types";
 
@@ -10,16 +11,33 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(false);
   const [browserLoginStep, setBrowserLoginStep] = useState<"idle" | "opening" | "waiting">("idle");
   const [checking, setChecking] = useState(!peek("li-session"));
+  const [testing, setTesting] = useState(false);
+  const [testMsg, setTestMsg] = useState("");
   const [error, setError] = useState("");
   const [showManual, setShowManual] = useState(false);
   const [liAt, setLiAt] = useState("");
   const [jsessionid, setJsessionid] = useState("");
+  const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
+  const [instantlyCampaignId, setInstantlyCampaignId] = useState("");
+  const [savingInstantly, setSavingInstantly] = useState(false);
 
   useEffect(() => {
     getLinkedInStatus()
-      .then(s => { setSession(s); put("li-session", s); })
-      .catch(() => setSession({ connected: false }))
+      .then(s => { setSession(s); put("li-session", s); setError(""); })
+      .catch((e: unknown) => {
+        setSession({ connected: false });
+        const msg = e instanceof Error ? e.message : "";
+        if (msg.includes("Connection failed") || msg.includes("Cannot reach")) {
+          setError(msg);
+        }
+      })
       .finally(() => setChecking(false));
+    getAppSettings()
+      .then((s) => {
+        setAppSettings(s);
+        setInstantlyCampaignId(s.instantly_campaign_id || "");
+      })
+      .catch(() => {});
   }, []);
 
   const handleBrowserLogin = async () => {
@@ -35,8 +53,8 @@ export default function SettingsPage() {
       } else {
         setError((result as any).error || "Login failed — please try again");
       }
-    } catch (e: any) {
-      setError(e.message || "Login failed");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Login failed");
     } finally {
       setLoading(false);
       setBrowserLoginStep("idle");
@@ -45,11 +63,15 @@ export default function SettingsPage() {
 
   const handleConnect = async () => {
     if (!liAt.trim()) { setError("Paste your li_at cookie value."); return; }
-    if (!jsessionid.trim()) { setError("Paste your JSESSIONID cookie value too."); return; }
     setLoading(true);
     setError("");
     try {
-      const result = await connectLinkedIn(liAt.trim(), jsessionid.trim(), "", "");
+      const result = await connectLinkedIn(
+        liAt.trim(),
+        jsessionid.trim() || "ajax:0",
+        "",
+        ""
+      );
       setSession(result);
       put("li-session", result);
       if (result.connected) {
@@ -58,10 +80,33 @@ export default function SettingsPage() {
       } else {
         setError((result as any).error || "Could not connect — make sure you're logged into LinkedIn");
       }
-    } catch (e: any) {
-      setError(e.message || "Failed to connect");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to connect");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleTest = async () => {
+    setTesting(true);
+    setTestMsg("");
+    setError("");
+    try {
+      const r = await testLinkedInSession();
+      if (r.connected) {
+        setSession(r);
+        put("li-session", r);
+        setTestMsg(r.name ? `API OK — ${r.name}` : "API connection verified");
+      } else {
+        setTestMsg("");
+        setError(r.error || "Session invalid — sign in again");
+        setSession({ connected: false });
+        put("li-session", { connected: false });
+      }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Test failed — is the backend running on :8000?");
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -81,6 +126,12 @@ export default function SettingsPage() {
       </header>
 
       <div style={{ padding: "0 40px", maxWidth: 520 }}>
+
+        {error && (
+          <div style={{ marginBottom: 16, padding: "12px 16px", background: "#F4F0FF", border: "1px solid #E4DEFF", borderRadius: 9, fontSize: 13, color: "#5B46B8" }}>
+            {error}
+          </div>
+        )}
 
         {/* LinkedIn card */}
         <div className="card" style={{ overflow: "hidden", marginBottom: 12 }}>
@@ -124,15 +175,29 @@ export default function SettingsPage() {
                     </a>
                   )}
                 </div>
-                <button
-                  onClick={handleDisconnect}
-                  style={{ fontSize: 12, color: "#b0b0b4", background: "none", border: "none", cursor: "pointer", padding: "4px 6px", transition: "color 0.1s" }}
-                  onMouseOver={e => (e.currentTarget.style.color = "#D90429")}
-                  onMouseOut={e => (e.currentTarget.style.color = "#b0b0b4")}
-                >
-                  Disconnect
-                </button>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+                  <button
+                    onClick={handleTest}
+                    disabled={testing}
+                    style={{ fontSize: 11, fontWeight: 600, padding: "5px 10px", borderRadius: 6, border: "1.5px solid #bbf7d0", background: "#f0fdf4", color: "#166534", cursor: testing ? "wait" : "pointer" }}
+                  >
+                    {testing ? "Testing..." : "Test API"}
+                  </button>
+                  <button
+                    onClick={handleDisconnect}
+                    style={{ fontSize: 12, color: "#b0b0b4", background: "none", border: "none", cursor: "pointer", padding: "4px 6px" }}
+                    onMouseOver={e => (e.currentTarget.style.color = "#6E56CF")}
+                    onMouseOut={e => (e.currentTarget.style.color = "#b0b0b4")}
+                  >
+                    Disconnect
+                  </button>
+                </div>
               </div>
+              {testMsg && (
+                <p style={{ margin: "12px 0 0", fontSize: 12, color: "#166534", background: "#f0fdf4", padding: "8px 12px", borderRadius: 7, border: "1px solid #bbf7d0" }}>
+                  {testMsg}
+                </p>
+              )}
             </div>
           ) : (
             <div style={{ padding: "18px 20px" }}>
@@ -151,9 +216,9 @@ export default function SettingsPage() {
                   <button
                     onClick={handleBrowserLogin}
                     disabled={loading}
-                    style={{
-                      width: "100%", padding: "12px 0", marginBottom: 14,
-                      background: loading ? "#d0d0d4" : "#0077B5",
+                  style={{
+                    width: "100%", padding: "12px 0", marginBottom: 14,
+                    background: loading ? "#d0d0d4" : "var(--accent, #6E56CF)",
                       color: "#fff", fontWeight: 700, fontSize: 14,
                       border: "none", borderRadius: 9,
                       cursor: loading ? "not-allowed" : "pointer",
@@ -162,8 +227,8 @@ export default function SettingsPage() {
                       boxShadow: loading ? "none" : "0 1px 6px rgba(0,119,181,0.25)",
                       transition: "all 0.1s",
                     }}
-                    onMouseOver={e => { if (!loading) e.currentTarget.style.background = "#006aa3"; }}
-                    onMouseOut={e => { if (!loading) e.currentTarget.style.background = "#0077B5"; }}
+                    onMouseOver={e => { if (!loading) e.currentTarget.style.background = "#5B46B8"; }}
+                    onMouseOut={e => { if (!loading) e.currentTarget.style.background = "#6E56CF"; }}
                   >
                     {loading && browserLoginStep === "opening" ? (
                       <>
@@ -181,7 +246,7 @@ export default function SettingsPage() {
                   </button>
 
                   {error && (
-                    <div style={{ padding: "10px 14px", marginBottom: 12, background: "#fff1f2", border: "1px solid #fecdd3", borderRadius: 7, fontSize: 13, color: "#9f1239" }}>
+                    <div style={{ padding: "10px 14px", marginBottom: 12, background: "#fff1f2", border: "1px solid #E4DEFF", borderRadius: 7, fontSize: 13, color: "#9f1239" }}>
                       {error}
                     </div>
                   )}
@@ -211,20 +276,20 @@ export default function SettingsPage() {
                         style={{ fontFamily: "monospace", fontSize: 12, marginBottom: 10 }} autoComplete="off" />
 
                       <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#5a5a5e", marginBottom: 5, letterSpacing: "0.04em", textTransform: "uppercase" }}>
-                        JSESSIONID
+                        JSESSIONID <span style={{ fontWeight: 400, color: "#8a8a8e", textTransform: "none" }}>(optional — use browser login if connect fails)</span>
                       </label>
                       <input type="password" value={jsessionid} onChange={e => setJsessionid(e.target.value)}
                         onKeyDown={e => e.key === "Enter" && handleConnect()}
-                        placeholder={`"ajax:1234567890123456789"`} className="input"
+                        placeholder={`ajax:1234567890123456789`} className="input"
                         style={{ fontFamily: "monospace", fontSize: 12, marginBottom: 12 }} autoComplete="off" />
 
-                      <button onClick={handleConnect} disabled={loading || !liAt.trim() || !jsessionid.trim()} style={{
+                      <button onClick={handleConnect} disabled={loading || !liAt.trim()} style={{
                         width: "100%", padding: "10px 0",
-                        background: loading || !liAt.trim() || !jsessionid.trim() ? "#e0e0e2" : "#0a0a0a",
-                        color: loading || !liAt.trim() || !jsessionid.trim() ? "#a0a0a4" : "#fff",
+                        background: loading || !liAt.trim() ? "#e0e0e2" : "#0a0a0a",
+                        color: loading || !liAt.trim() ? "#a0a0a4" : "#fff",
                         fontWeight: 600, fontSize: 13,
                         border: "none", borderRadius: 7,
-                        cursor: loading || !liAt.trim() || !jsessionid.trim() ? "not-allowed" : "pointer",
+                        cursor: loading || !liAt.trim() ? "not-allowed" : "pointer",
                         display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
                         letterSpacing: "-0.01em",
                       }}>
@@ -238,6 +303,46 @@ export default function SettingsPage() {
               )}
             </div>
           )}
+        </div>
+
+        <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+          <h2 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 700 }}>Instantly (email outreach)</h2>
+          <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--text-secondary)" }}>
+            Set INSTANTLY_CAMPAIGN_ID in backend/.env (preferred) or save here. Leads with emails push via Instantly API.
+            {appSettings?.dry_run && " Dry run is ON — no leads will be sent."}
+          </p>
+          <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)" }}>Instantly campaign ID</label>
+          <input
+            value={instantlyCampaignId}
+            onChange={(e) => setInstantlyCampaignId(e.target.value)}
+            placeholder="uuid-from-instantly"
+            className="input"
+            style={{ marginTop: 6, marginBottom: 10 }}
+          />
+          <div style={{ display: "flex", gap: 8, fontSize: 12, color: "var(--text-muted)", marginBottom: 10 }}>
+            <span>Serper: {appSettings?.has_serper ? "✓" : "—"}</span>
+            <span>Proxycurl: {appSettings?.has_proxycurl ? "✓" : "—"}</span>
+            <span>Instantly: {appSettings?.has_instantly ? "✓" : "—"}</span>
+            <span>Origami: {appSettings?.has_origami ? "✓" : "—"}</span>
+          </div>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={savingInstantly}
+            onClick={async () => {
+              setSavingInstantly(true);
+              try {
+                const s = await updateAppSettings({ instantly_campaign_id: instantlyCampaignId });
+                setAppSettings(s);
+              } catch (e: unknown) {
+                setError(e instanceof Error ? e.message : "Save failed");
+              } finally {
+                setSavingInstantly(false);
+              }
+            }}
+          >
+            {savingInstantly ? "Saving…" : "Save Instantly settings"}
+          </button>
         </div>
 
         {/* Rate limit notice */}

@@ -4,7 +4,22 @@ import uuid
 from datetime import datetime
 
 from database import AsyncSessionLocal, Base, engine
-from models import Lead, Sequence, EmailSent, LinkedInOutreachLog  # noqa
+from models import (  # noqa
+    Lead,
+    Sequence,
+    EmailSent,
+    LinkedInOutreachLog,
+    Search,
+    Workspace,
+    WorkspaceList,
+    WorkspaceListLead,
+    Campaign,
+    CampaignEnrollment,
+    AgentChatMessage,
+    ExploreSession,
+    ExploreRow,
+    ExploreChatMessage,
+)
 
 
 DEFAULT_SEQUENCES = [
@@ -62,32 +77,42 @@ async def init():
         await conn.run_sync(Base.metadata.create_all)
     print("Tables created/verified.")
 
-    # Add new LinkedIn columns if missing (safe migration)
-    async with engine.begin() as conn:
+    # SQLite-safe column migrations (no IF NOT EXISTS on older SQLite)
+    from sqlalchemy import text
+
+    async def _add_col(conn, table: str, col: str, typedef: str):
         try:
-            await conn.execute(
-                __import__("sqlalchemy").text(
-                    "ALTER TABLE leads ADD COLUMN IF NOT EXISTS linkedin_profile_id VARCHAR(255)"
-                )
-            )
-            await conn.execute(
-                __import__("sqlalchemy").text(
-                    "ALTER TABLE leads ADD COLUMN IF NOT EXISTS linkedin_member_id VARCHAR(100)"
-                )
-            )
-            await conn.execute(
-                __import__("sqlalchemy").text(
-                    "ALTER TABLE sequences ADD COLUMN IF NOT EXISTS connection_note_template TEXT"
-                )
-            )
-            await conn.execute(
-                __import__("sqlalchemy").text(
-                    "ALTER TABLE sequences ADD COLUMN IF NOT EXISTS message_template TEXT"
-                )
-            )
-            print("LinkedIn columns added/verified.")
-        except Exception as e:
-            print(f"Column migration note: {e}")
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {typedef}"))
+        except Exception:
+            pass
+
+    async with engine.begin() as conn:
+        for table, col, typedef in [
+            ("leads", "linkedin_profile_id", "VARCHAR(255)"),
+            ("leads", "linkedin_member_id", "VARCHAR(100)"),
+            ("sequences", "connection_note_template", "TEXT"),
+            ("sequences", "message_template", "TEXT"),
+            ("campaigns", "workspace_id", "CHAR(32)"),
+            ("campaigns", "list_id", "CHAR(32)"),
+            ("campaigns", "search_id", "CHAR(32)"),
+            ("agent_chat_messages", "workspace_id", "CHAR(32)"),
+            ("agent_chat_messages", "list_id", "CHAR(32)"),
+            ("leads", "search_id", "CHAR(32)"),
+            ("leads", "first_name", "VARCHAR(120)"),
+            ("leads", "last_name", "VARCHAR(120)"),
+            ("leads", "source_url", "VARCHAR(500)"),
+            ("leads", "sequence_status", "VARCHAR(50)"),
+            ("workspace_lists", "origami_meta", "TEXT"),
+            ("searches", "origami_job_id", "VARCHAR(255)"),
+            ("searches", "status_message", "VARCHAR(500)"),
+            ("searches", "lead_count", "INTEGER"),
+            ("searches", "origami_table_id", "VARCHAR(64)"),
+            ("searches", "origami_table_url", "VARCHAR(500)"),
+            ("searches", "linkedin_message_template", "TEXT"),
+            ("leads", "score", "INTEGER"),
+        ]:
+            await _add_col(conn, table, col, typedef)
+        print("Column migrations applied.")
 
     # Seed default sequences if none exist
     async with AsyncSessionLocal() as session:
@@ -104,6 +129,36 @@ async def init():
         else:
             print(f"Sequences already exist ({len(existing)} found). Skipping seed.")
             print("Delete existing sequences to re-seed defaults.")
+
+    # Seed default campaign if none exist
+    async with AsyncSessionLocal() as session:
+        camp_result = await session.execute(select(Campaign))
+        camps = camp_result.scalars().all()
+        if not camps:
+            default_campaign = Campaign(
+                id=uuid.uuid4(),
+                name="LinkedIn Outreach",
+                connection_note_template=(
+                    "Hi {{first_name}} — I'm Neil, a Stanford student building Hedwig, "
+                    "a free AI agent for Gmail and Google Calendar. Would love to connect!"
+                ),
+                message_template=(
+                    "Hey {{first_name}}, thanks for connecting!\n\n"
+                    "Hedwig is a free AI agent that plugs into Gmail and Google Calendar — "
+                    "it triages your inbox, drafts replies, and handles scheduling.\n\n"
+                    "We have 500+ users from Stanford, DoorDash, and more. "
+                    "Would love to show you a quick demo if you're open to it!"
+                ),
+                wait_days_after_accept=1,
+                is_active=True,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+            session.add(default_campaign)
+            await session.commit()
+            print("Seeded default LinkedIn Outreach campaign.")
+        else:
+            print(f"Campaigns already exist ({len(camps)} found).")
 
 
 if __name__ == "__main__":

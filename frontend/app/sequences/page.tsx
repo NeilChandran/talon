@@ -73,7 +73,7 @@ function Modal({ seq, onClose, onSave }: {
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                 <label className="label" style={{ margin: 0 }}>Connection Note <span style={{ color: "#8a8a8e", fontWeight: 400 }}>(max 300 chars)</span></label>
-                <span style={{ fontSize: 11, color: note.length > 280 ? "#D90429" : "#8a8a8e", fontFamily: "monospace" }}>{note.length}/300</span>
+                <span style={{ fontSize: 11, color: note.length > 280 ? "#6E56CF" : "#8a8a8e", fontFamily: "monospace" }}>{note.length}/300</span>
               </div>
               <textarea
                 value={note}
@@ -166,7 +166,7 @@ function RunModal({ seq, leads, onClose }: { seq: Sequence; leads: Lead[]; onClo
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
                 <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#0a0a0a" }}>Select leads ({selected.size} selected)</p>
                 <button onClick={() => { if (selected.size === leads.length) setSelected(new Set()); else setSelected(new Set(leads.map(l => l.id))); }}
-                  style={{ fontSize: 12, color: "#D90429", background: "none", border: "none", cursor: "pointer" }}>
+                  style={{ fontSize: 12, color: "#6E56CF", background: "none", border: "none", cursor: "pointer" }}>
                   {selected.size === leads.length ? "Deselect all" : "Select all"}
                 </button>
               </div>
@@ -183,7 +183,7 @@ function RunModal({ seq, leads, onClose }: { seq: Sequence; leads: Lead[]; onClo
                   }}>
                     <input type="checkbox" checked={selected.has(lead.id)} onChange={() => {
                       const next = new Set(selected); next.has(lead.id) ? next.delete(lead.id) : next.add(lead.id); setSelected(next);
-                    }} style={{ accentColor: "#D90429", flexShrink: 0 }} />
+                    }} style={{ accentColor: "#6E56CF", flexShrink: 0 }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: "#0a0a0a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lead.name}</p>
                       <p style={{ margin: 0, fontSize: 11, color: "#6b6b70", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{[lead.title, lead.company].filter(Boolean).join(" · ")}</p>
@@ -226,14 +226,14 @@ function RunModal({ seq, leads, onClose }: { seq: Sequence; leads: Lead[]; onClo
                   <span style={{ fontSize: 13, color: "#6b6b70" }}>{job.done}/{job.total}</span>
                 </div>
                 <div style={{ height: 8, background: "#f0f0f2", borderRadius: 4, overflow: "hidden" }}>
-                  <div style={{ height: "100%", background: "#D90429", width: `${pct}%`, transition: "width 0.5s", borderRadius: 4 }} />
+                  <div style={{ height: "100%", background: "#6E56CF", width: `${pct}%`, transition: "width 0.5s", borderRadius: 4 }} />
                 </div>
               </div>
 
               {/* Stats */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 20 }}>
                 {[{ label: "Sent", value: job.sent, color: "#166534", bg: "#f0fdf4", border: "#bbf7d0" },
-                  { label: "Failed", value: job.failed, color: "#9f1239", bg: "#fff1f2", border: "#fecdd3" },
+                  { label: "Failed", value: job.failed, color: "#9f1239", bg: "#fff1f2", border: "#E4DEFF" },
                   { label: "Left", value: job.total - job.done, color: "#6b6b70", bg: "#f7f7f8", border: "#e8e8ea" }
                 ].map(s => (
                   <div key={s.label} style={{ background: s.bg, border: `1px solid ${s.border}`, borderRadius: 8, padding: "14px", textAlign: "center" }}>
@@ -245,7 +245,7 @@ function RunModal({ seq, leads, onClose }: { seq: Sequence; leads: Lead[]; onClo
 
               {job.status === "running" && (
                 <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "#f7f7f8", border: "1px solid #e8e8ea", borderRadius: 8, marginBottom: 16 }}>
-                  <div style={{ width: 14, height: 14, border: "2px solid #D90429", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
+                  <div style={{ width: 14, height: 14, border: "2px solid #6E56CF", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
                   <span style={{ fontSize: 13, color: "#3a3a3c" }}>
                     {job.step || (job.current ? `Sending to ${job.current}...` : "Working...")}
                   </span>
@@ -253,7 +253,7 @@ function RunModal({ seq, leads, onClose }: { seq: Sequence; leads: Lead[]; onClo
               )}
 
               {job.status === "failed" && job.error && (
-                <div style={{ padding: "10px 14px", background: "#fff1f2", border: "1px solid #fecdd3", borderRadius: 7, fontSize: 13, color: "#9f1239", marginBottom: 16 }}>
+                <div style={{ padding: "10px 14px", background: "#fff1f2", border: "1px solid #E4DEFF", borderRadius: 7, fontSize: 13, color: "#9f1239", marginBottom: 16 }}>
                   {job.error}
                 </div>
               )}
@@ -265,7 +265,7 @@ function RunModal({ seq, leads, onClose }: { seq: Sequence; leads: Lead[]; onClo
                       display: "flex", alignItems: "center", justifyContent: "space-between",
                       padding: "8px 12px", borderRadius: 7, fontSize: 12,
                       background: r.status === "sent" ? "#f0fdf4" : r.status === "failed" ? "#fff1f2" : "#f7f7f8",
-                      border: `1px solid ${r.status === "sent" ? "#bbf7d0" : r.status === "failed" ? "#fecdd3" : "#e8e8ea"}`,
+                      border: `1px solid ${r.status === "sent" ? "#bbf7d0" : r.status === "failed" ? "#E4DEFF" : "#e8e8ea"}`,
                     }}>
                       <span style={{ fontWeight: 500, color: "#0a0a0a" }}>{r.name}</span>
                       <span style={{ color: r.status === "sent" ? "#166534" : r.status === "failed" ? "#9f1239" : "#8a8a8e", fontSize: 11, maxWidth: 220, textAlign: "right" }}>
@@ -321,7 +321,7 @@ function TestConnectionButton() {
     idle: { color: "#5a5a5e", border: "#d8d8dc" },
     testing: { color: "#8a8a8e", border: "#e0e0e2" },
     ok: { color: "#166534", border: "#bbf7d0" },
-    fail: { color: "#9f1239", border: "#fecdd3" },
+    fail: { color: "#9f1239", border: "#E4DEFF" },
   }[state];
 
   return (
@@ -442,7 +442,7 @@ export default function SequencesPage() {
             <div>
               <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#92400e" }}>LinkedIn not connected</p>
               <p style={{ margin: "2px 0 0", fontSize: 12, color: "#78350f" }}>
-                <a href="/settings" style={{ color: "#D90429" }}>Connect in Settings</a> to enable automation. Message preview still works.
+                <a href="/settings" style={{ color: "#6E56CF" }}>Connect in Settings</a> to enable automation. Message preview still works.
               </p>
             </div>
           </div>
@@ -468,7 +468,7 @@ export default function SequencesPage() {
           <div style={{
             marginBottom: 14, padding: "12px 16px", borderRadius: 9, display: "flex", gap: 12, alignItems: "center",
             background: replyResult.error ? "#fff1f2" : replyResult.replied > 0 ? "#eff6ff" : "#f7f7f8",
-            border: `1px solid ${replyResult.error ? "#fecdd3" : replyResult.replied > 0 ? "#bfdbfe" : "#e8e8ea"}`,
+            border: `1px solid ${replyResult.error ? "#E4DEFF" : replyResult.replied > 0 ? "#bfdbfe" : "#e8e8ea"}`,
           }}>
             <span style={{ fontSize: 16 }}>{replyResult.error ? "⚠️" : replyResult.replied > 0 ? "💬" : "📭"}</span>
             <div style={{ flex: 1 }}>
@@ -499,7 +499,7 @@ export default function SequencesPage() {
             marginBottom: 20, padding: "10px 16px", borderRadius: 9,
             display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between",
             background: sendCap.is_capped ? "#fff1f2" : sendCap.pct_used >= 75 ? "#fffbeb" : "#f7f7f8",
-            border: `1px solid ${sendCap.is_capped ? "#fecdd3" : sendCap.pct_used >= 75 ? "#fde68a" : "#e8e8ea"}`,
+            border: `1px solid ${sendCap.is_capped ? "#E4DEFF" : sendCap.pct_used >= 75 ? "#fde68a" : "#e8e8ea"}`,
           }}>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <span style={{ fontSize: 14 }}>{sendCap.is_capped ? "🛑" : sendCap.pct_used >= 75 ? "⚠️" : "📊"}</span>
@@ -517,7 +517,7 @@ export default function SequencesPage() {
                 <div style={{
                   height: "100%",
                   width: `${Math.min(100, sendCap.pct_used)}%`,
-                  background: sendCap.is_capped ? "#D90429" : sendCap.pct_used >= 75 ? "#f59e0b" : "#22c55e",
+                  background: sendCap.is_capped ? "#6E56CF" : sendCap.pct_used >= 75 ? "#f59e0b" : "#22c55e",
                   borderRadius: 2,
                 }} />
               </div>
@@ -533,7 +533,7 @@ export default function SequencesPage() {
         ) : sequences.length === 0 ? (
           <div style={{ textAlign: "center", padding: "80px 0" }}>
             <p style={{ color: "#8a8a8e", fontSize: 14 }}>No sequences yet.</p>
-            <button onClick={() => { setEditing(null); setShowModal(true); }} style={{ marginTop: 10, color: "#D90429", background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>Create your first sequence →</button>
+            <button onClick={() => { setEditing(null); setShowModal(true); }} style={{ marginTop: 10, color: "#6E56CF", background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>Create your first sequence →</button>
           </div>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
@@ -580,7 +580,7 @@ export default function SequencesPage() {
                     <button
                       onClick={() => handleDelete(seq.id)}
                       style={{ padding: "7px 10px", background: "none", border: "1.5px solid #d8d8dc", borderRadius: 7, fontSize: 12, cursor: "pointer", color: "#8a8a8e" }}
-                      onMouseOver={e => { e.currentTarget.style.color = "#D90429"; e.currentTarget.style.borderColor = "#fecdd3"; }}
+                      onMouseOver={e => { e.currentTarget.style.color = "#6E56CF"; e.currentTarget.style.borderColor = "#E4DEFF"; }}
                       onMouseOut={e => { e.currentTarget.style.color = "#8a8a8e"; e.currentTarget.style.borderColor = "#d8d8dc"; }}
                     >
                       ✕

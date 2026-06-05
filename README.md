@@ -70,6 +70,7 @@ Open [http://localhost:3000](http://localhost:3000)
 
 | Route | What it does |
 |-------|-------------|
+| `/workspace` | **Origami-style command center** — AI agent + sequencer + per-contact sequence detail |
 | `/` | Dashboard — new prospects waiting for outreach |
 | `/prospecting` | Search LinkedIn by plain-English description |
 | `/leads` | Full lead table — filter, sort, bulk-select, update status |
@@ -100,6 +101,18 @@ JSESSIONID is derived automatically. The session is stored permanently until you
 | **7–9** | Chief of Staff / Ops Lead / VP Ops at a fast-moving startup |
 | **4–6** | Knowledge worker, uses Notion / Linear / Slack |
 | **1–3** | Enterprise role, non-decision-maker, Outlook stack |
+
+---
+
+## Workspace (like origami.chat)
+
+Open **Workspace** for the full revenue-agent experience:
+
+1. **Left panel** — Talon AI chat: update copy, launch campaigns, check replies
+2. **Middle panel** — Sequencer list with per-contact status (Replied, Completed, Stopped, etc.)
+3. **Right panel** — 2-step flow: connection request → wait after accept → follow-up DM
+
+Campaigns are multi-step tables (e.g. "LinkedIn Outreach"). Enroll leads, connect LinkedIn in Settings, then **Launch sequence** or ask the AI to do it.
 
 ---
 

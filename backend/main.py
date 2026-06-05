@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from routers import leads, outreach, prospecting, sequences
 from routers import linkedin_auth
 from routers import analytics
+from routers import campaigns, agent, explore, workspaces, outreach_export, searches
 
 app = FastAPI(title="Talon API", version="2.0.0")
 
@@ -25,6 +26,12 @@ app.include_router(outreach.router, prefix="/outreach", tags=["outreach"])
 app.include_router(sequences.router, prefix="/sequences", tags=["sequences"])
 app.include_router(linkedin_auth.router, prefix="/linkedin", tags=["linkedin"])
 app.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
+app.include_router(campaigns.router, prefix="/campaigns", tags=["campaigns"])
+app.include_router(agent.router, prefix="/agent", tags=["agent"])
+app.include_router(explore.router, prefix="/explore", tags=["explore"])
+app.include_router(workspaces.router, prefix="/workspaces", tags=["workspaces"])
+app.include_router(outreach_export.router, prefix="/outreach-export", tags=["outreach-export"])
+app.include_router(searches.router, prefix="/searches", tags=["searches"])
 
 
 @app.get("/health")

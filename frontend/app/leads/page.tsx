@@ -112,7 +112,7 @@ export default function LeadsPage() {
                 put("home-leads", []);
               }}
               style={{ fontSize: 12, color: "#8a8a8e", background: "none", border: "1.5px solid #e0e0e2", borderRadius: 7, cursor: "pointer", padding: "7px 12px" }}
-              onMouseOver={e => { e.currentTarget.style.color = "#D90429"; e.currentTarget.style.borderColor = "#fecdd3"; }}
+              onMouseOver={e => { e.currentTarget.style.color = "#6E56CF"; e.currentTarget.style.borderColor = "#E4DEFF"; }}
               onMouseOut={e => { e.currentTarget.style.color = "#8a8a8e"; e.currentTarget.style.borderColor = "#e0e0e2"; }}
             >
               Clear all
@@ -154,7 +154,7 @@ export default function LeadsPage() {
                     <input type="checkbox"
                       checked={selected.size === leads.length && leads.length > 0}
                       onChange={() => { if (selected.size === leads.length) setSelected(new Set()); else setSelected(new Set(leads.map(l => l.id))); }}
-                      style={{ accentColor: "#D90429" }} />
+                      style={{ accentColor: "#6E56CF" }} />
                   </th>
                   {(["name","title","company","icp_score","status","LinkedIn",""] as const).map((col, i) => (
                     <th key={i}
@@ -163,7 +163,7 @@ export default function LeadsPage() {
                     >
                       {col === "" ? "Actions" : col === "icp_score" ? "Score" : col.charAt(0).toUpperCase() + col.slice(1)}
                       {["name","company","icp_score","status"].includes(col) && sortBy === col && (
-                        <span style={{ color: "#D90429", marginLeft: 4 }}>{sortOrder === "desc" ? "↓" : "↑"}</span>
+                        <span style={{ color: "#6E56CF", marginLeft: 4 }}>{sortOrder === "desc" ? "↓" : "↑"}</span>
                       )}
                     </th>
                   ))}
@@ -174,14 +174,14 @@ export default function LeadsPage() {
                   <tr key={i}>{Array.from({ length: 8 }).map((_, j) => <td key={j}><div className="skeleton" style={{ height: 14, maxWidth: 100, borderRadius: 4 }} /></td>)}</tr>
                 )) : leads.length === 0 ? (
                   <tr><td colSpan={8} style={{ textAlign: "center", padding: "60px 0", color: "#8a8a8e" }}>
-                    No leads found. <Link href="/prospecting" style={{ color: "#D90429" }}>Start prospecting →</Link>
+                    No leads found. <Link href="/prospecting" style={{ color: "#6E56CF" }}>Start prospecting →</Link>
                   </td></tr>
                 ) : leads.map(lead => (
                   <tr key={lead.id} style={{ background: selected.has(lead.id) ? "#fff5f6" : undefined }}>
-                    <td><input type="checkbox" checked={selected.has(lead.id)} onChange={() => { const n = new Set(selected); n.has(lead.id) ? n.delete(lead.id) : n.add(lead.id); setSelected(n); }} style={{ accentColor: "#D90429" }} /></td>
+                    <td><input type="checkbox" checked={selected.has(lead.id)} onChange={() => { const n = new Set(selected); n.has(lead.id) ? n.delete(lead.id) : n.add(lead.id); setSelected(n); }} style={{ accentColor: "#6E56CF" }} /></td>
                     <td>
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <div style={{ width: 30, height: 30, borderRadius: "50%", background: "#fff0f2", border: "1.5px solid #fecdd3", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: "#D90429", flexShrink: 0 }}>
+                        <div style={{ width: 30, height: 30, borderRadius: "50%", background: "#F4F0FF", border: "1.5px solid #E4DEFF", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: "#6E56CF", flexShrink: 0 }}>
                           {(lead.name || "?").split(" ").slice(0,2).map(n => n[0]).join("").toUpperCase()}
                         </div>
                         <span style={{ fontWeight: 500, color: "#0a0a0a", whiteSpace: "nowrap" }}>{lead.name}</span>
@@ -224,7 +224,7 @@ export default function LeadsPage() {
                     </td>
                     <td>
                       <div style={{ display: "flex", gap: 10 }}>
-                        <Link href={`/outreach?ids=${lead.id}`} style={{ fontSize: 12, color: "#D90429", textDecoration: "none", fontWeight: 500 }}>Message</Link>
+                        <Link href={`/outreach?ids=${lead.id}`} style={{ fontSize: 12, color: "#6E56CF", textDecoration: "none", fontWeight: 500 }}>Message</Link>
                         <button onClick={async () => {
                           if (!confirm("Delete?")) return;
                           await deleteLead(lead.id);
@@ -233,7 +233,7 @@ export default function LeadsPage() {
                           put("leads", next);
                         }}
                           style={{ fontSize: 12, color: "#8a8a8e", background: "none", border: "none", cursor: "pointer", padding: 0 }}
-                          onMouseOver={e => e.currentTarget.style.color = "#D90429"}
+                          onMouseOver={e => e.currentTarget.style.color = "#6E56CF"}
                           onMouseOut={e => e.currentTarget.style.color = "#8a8a8e"}
                         >Delete</button>
                       </div>

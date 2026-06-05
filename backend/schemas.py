@@ -122,3 +122,151 @@ class StatsResponse(BaseModel):
     emails_sent: int
     reply_rate: float
     leads_this_week: int
+
+
+# ─── Campaigns (origami-style workspace) ─────────────────────────────────────
+
+class CampaignBase(BaseModel):
+    name: str
+    connection_note_template: Optional[str] = ""
+    message_template: Optional[str] = ""
+    wait_days_after_accept: int = 1
+    is_active: bool = True
+
+
+class CampaignCreate(CampaignBase):
+    pass
+
+
+class CampaignUpdate(BaseModel):
+    name: Optional[str] = None
+    connection_note_template: Optional[str] = None
+    message_template: Optional[str] = None
+    wait_days_after_accept: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class CampaignResponse(CampaignBase):
+    id: UUID4
+    enrollment_count: int = 0
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class EnrollmentStatus(str, Enum):
+    pending = "pending"
+    connection_sent = "connection_sent"
+    accepted = "accepted"
+    dm_sent = "dm_sent"
+    replied = "replied"
+    completed = "completed"
+    stopped = "stopped"
+    failed = "failed"
+
+
+class CampaignEnrollmentResponse(BaseModel):
+    id: UUID4
+    campaign_id: UUID4
+    lead_id: UUID4
+    status: str
+    connection_note: Optional[str] = None
+    follow_up_message: Optional[str] = None
+    connection_sent_at: Optional[datetime] = None
+    accepted_at: Optional[datetime] = None
+    dm_sent_at: Optional[datetime] = None
+    stopped_reason: Optional[str] = None
+    last_error: Optional[str] = None
+    # Lead fields for UI
+    name: Optional[str] = None
+    title: Optional[str] = None
+    company: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    lead_status: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class EnrollLeadsRequest(BaseModel):
+    lead_ids: Optional[List[UUID4]] = None  # None = enroll all leads with LinkedIn URL
+
+
+class AgentChatRequest(BaseModel):
+    message: str
+    campaign_id: Optional[UUID4] = None
+
+
+class SuggestedAction(BaseModel):
+    id: str
+    label: str
+    action: str  # launch_campaign | update_copy | check_replies | enroll_leads
+
+
+class AgentChatResponse(BaseModel):
+    reply: str
+    suggested_actions: List[SuggestedAction] = []
+    campaign_updated: bool = False
+
+
+# ─── Explore (Origami-style) ───────────────────────────────────────────────────
+
+class ExploreSessionCreate(BaseModel):
+    icp_prompt: str
+
+
+class ExploreRowUpdate(BaseModel):
+    company_name: Optional[str] = None
+    website: Optional[str] = None
+    industry: Optional[str] = None
+    headcount: Optional[str] = None
+    location: Optional[str] = None
+
+
+class ExploreRefineRequest(BaseModel):
+    message: str
+
+
+class ExploreFilterRule(BaseModel):
+    field: str
+    op: str = "contains"
+    value: str
+
+
+class ExploreEnrichRequest(BaseModel):
+    column_key: str
+    column_type: str  # work_email | phone | tech_stack | funding | decision_maker_linkedin
+
+
+class ExploreRowResponse(BaseModel):
+    id: UUID4
+    company_name: str
+    website: str = ""
+    industry: str = ""
+    headcount: str = ""
+    location: str = ""
+    source: str = ""
+    fit_score: int = 0
+    enrichment: dict = {}
+    hidden: bool = False
+
+    class Config:
+        from_attributes = True
+
+
+class ExploreSessionResponse(BaseModel):
+    id: UUID4
+    icp_prompt: str
+    parsed_icp: dict = {}
+    status: str
+    scraper_status: dict = {}
+    filter_rules: list = []
+    enrichment_columns: list = []
+    rows: List[ExploreRowResponse] = []
+    messages: list = []
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

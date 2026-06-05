@@ -8,11 +8,17 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        accent: {
+          DEFAULT: "#6E56CF",
+          hover: "#5B46B8",
+          light: "#F4F0FF",
+          mid: "#E4DEFF",
+        },
         talon: {
-          red: "#D90429",
-          "red-hover": "#B8031F",
-          "red-light": "#FFF0F2",
-          "red-mid": "#FFD6DC",
+          DEFAULT: "#6E56CF",
+          hover: "#5B46B8",
+          light: "#F4F0FF",
+          mid: "#E4DEFF",
         },
         // Zoom-like light surfaces
         surface: {
@@ -41,7 +47,7 @@ module.exports = {
       boxShadow: {
         card: "0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04)",
         "card-md": "0 4px 12px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04)",
-        "btn-red": "0 1px 3px rgba(217,4,41,0.3)",
+        "btn-accent": "0 1px 3px rgba(110,86,207,0.3)",
       },
       animation: {
         "fade-in": "fadeIn 0.15s ease-out",

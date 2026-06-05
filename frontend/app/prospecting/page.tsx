@@ -273,7 +273,7 @@ export default function ProspectingPage() {
             <div>
               <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#0a0a0a" }}>Ready to find {currentMeta.label} leads</p>
               <p style={{ margin: "3px 0 0", fontSize: 12, color: "#6b6b70" }}>
-                Talon will search LinkedIn for ~25 high-fit leads using this signal. Takes ~2 minutes.
+                Talon runs Playwright scrapers (Crunchbase, job boards, LinkedIn) — not third-party databases. Takes ~2–4 minutes.
               </p>
             </div>
             <button onClick={handleSearch} className="btn-primary" style={{ flexShrink: 0, gap: 7 }}>
@@ -285,14 +285,36 @@ export default function ProspectingPage() {
 
         {/* ── Progress ── */}
         {loading && (
-          <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "13px 18px", background: "#fff", border: "1px solid #e8e8ea", borderRadius: 9, marginBottom: 20 }}>
-            <div style={{ width: 16, height: 16, border: "2.5px solid #e8e8ea", borderTopColor: "#0a0a0a", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
-            <div>
-              <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: "#0a0a0a", letterSpacing: "-0.01em" }}>
-                {job?.step || "Initializing..."}
-              </p>
-              {leads.length > 0 && <p style={{ margin: "2px 0 0", fontSize: 12, color: "#8a8a8e" }}>{leads.length} found so far</p>}
+          <div style={{ padding: "13px 18px", background: "#F4F0FF", border: "1px solid #E4DEFF", borderRadius: 9, marginBottom: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: job?.scraper_status ? 10 : 0 }}>
+              <div style={{ width: 16, height: 16, border: "2.5px solid #E4DEFF", borderTopColor: "#6E56CF", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
+              <div>
+                <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#5B46B8", letterSpacing: "-0.01em" }}>
+                  {job?.step || "Starting Playwright scrapers..."}
+                </p>
+                {leads.length > 0 && <p style={{ margin: "2px 0 0", fontSize: 12, color: "#8a8a8e" }}>{leads.length} leads found so far</p>}
+              </div>
             </div>
+            {job?.scraper_status && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {Object.entries(job.scraper_status).map(([name, st]) => (
+                  <span
+                    key={name}
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      padding: "4px 10px",
+                      borderRadius: 20,
+                      background: st.includes("done") ? "#dcfce7" : st === "running" ? "#fff" : st === "failed" ? "#fef2f2" : "#fff",
+                      color: st.includes("done") ? "#166534" : st === "running" ? "#6E56CF" : st === "failed" ? "#b91c1c" : "#8a8a8e",
+                      border: `1px solid ${st.includes("done") ? "#bbf7d0" : st === "running" ? "#E4DEFF" : "#fecaca"}`,
+                    }}
+                  >
+                    {name === "google_maps" ? "Google Maps" : name === "linkedin" ? "LinkedIn" : name.charAt(0).toUpperCase() + name.slice(1)}: {st}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

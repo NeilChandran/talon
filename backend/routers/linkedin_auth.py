@@ -7,6 +7,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from services.linkedin_service import (
+    _extra_cookies_from_session,
     clear_session,
     launch_login_browser,
     load_session,
@@ -29,14 +30,15 @@ class SessionCreate(BaseModel):
 async def set_session(body: SessionCreate):
     """Validate li_at + JSESSIONID via Voyager API (httpx, no browser)."""
     li_at = body.li_at.strip()
-    jsessionid = body.jsessionid.strip() if body.jsessionid else ""
+    jsessionid = (body.jsessionid or "ajax:0").strip().strip('"')
     bcookie = body.bcookie.strip() if body.bcookie else ""
-    result = await setup_session(li_at, jsessionid=jsessionid, bcookie=bcookie)
+    bscookie = body.bscookie.strip() if body.bscookie else ""
+    result = await setup_session(li_at, jsessionid=jsessionid, bcookie=bcookie, bscookie=bscookie)
 
-    if not result.get("valid", True):
+    if not result.get("valid"):
         return {
             "connected": False,
-            "error": result.get("error", "LinkedIn rejected the cookies — paste fresh li_at and JSESSIONID"),
+            "error": result.get("error", "LinkedIn rejected the cookies — try Sign in with LinkedIn instead"),
         }
 
     jsessionid = result.get("jsessionid", "ajax:0")
@@ -49,6 +51,7 @@ async def set_session(body: SessionCreate):
             "linkedin_url": result.get("linkedin_url", ""),
         },
         bcookie=bcookie,
+        bscookie=body.bscookie.strip() if body.bscookie else "",
     )
     return {
         "connected": True,
@@ -85,12 +88,44 @@ async def browser_login():
 
     save_session(
         li_at,
-        jsessionid,
+        jsessionid or "ajax:0",
         {"name": name, "headline": headline, "linkedin_url": linkedin_url},
         bcookie=bcookie,
         bscookie=bscookie,
         extra=extra_cookies,
     )
+
+    # Refresh session via API — picks up rotated JSESSIONID + validates write-ready cookies
+    saved = load_session()
+    if saved:
+        verified = await validate_session(
+            saved["li_at"],
+            saved.get("jsessionid", "ajax:0"),
+            saved.get("bcookie", ""),
+            saved.get("bscookie", ""),
+            _extra_cookies_from_session(saved),
+        )
+        if verified.get("valid"):
+            save_session(
+                saved["li_at"],
+                verified.get("jsessionid", saved.get("jsessionid", "ajax:0")),
+                {
+                    "name": verified.get("name", name),
+                    "headline": verified.get("headline", headline),
+                    "linkedin_url": verified.get("linkedin_url", linkedin_url),
+                },
+                bcookie=saved.get("bcookie", ""),
+                bscookie=saved.get("bscookie", ""),
+                extra=_extra_cookies_from_session(saved),
+            )
+            name = verified.get("name", name)
+        else:
+            # Browser cookies are saved — httpx check can fail but session may still work
+            print(
+                f"[linkedin] post-login httpx check failed: {verified.get('error')} — keeping browser session",
+                flush=True,
+            )
+
     return {"connected": True, "name": name, "headline": headline, "linkedin_url": linkedin_url}
 
 
@@ -121,24 +156,26 @@ async def test_session():
     if not sess:
         return {"connected": False, "error": "No session — connect LinkedIn in Settings"}
 
+    extra = _extra_cookies_from_session(sess)
     result = await validate_session(
         sess["li_at"],
-        sess.get("jsessionid", ""),
+        sess.get("jsessionid", "ajax:0"),
         sess.get("bcookie", ""),
         sess.get("bscookie", ""),
+        extra,
     )
     if result["valid"]:
-        # Update cached name/headline if it changed
         save_session(
             sess["li_at"],
-            sess.get("jsessionid", ""),
+            result.get("jsessionid", sess.get("jsessionid", "ajax:0")),
             {
                 "name": result["name"],
                 "headline": result.get("headline", ""),
-                "linkedin_url": result.get("linkedin_url", ""),
+                "linkedin_url": result.get("linkedin_url", sess.get("linkedin_url", "")),
             },
             bcookie=sess.get("bcookie", ""),
             bscookie=sess.get("bscookie", ""),
+            extra=extra,
         )
         return {
             "connected": True,

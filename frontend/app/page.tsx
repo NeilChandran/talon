@@ -1,214 +1,126 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { getStats, getRecentLeads, getSendCap, getAnalyticsFunnel } from "@/lib/api";
-import { peek, put, isStale } from "@/lib/cache";
-import type { FunnelData, SendCapStatus, Stats, Lead } from "@/types";
+import { createSearch, getRecentSearches, type RecentSearch } from "@/lib/api";
+import TalonLogo from "@/components/TalonLogo";
 
-function StatCard({ label, value, sub, accent }: { label: string; value: string | number; sub: string; accent?: boolean }) {
-  return (
-    <div className="stat-card">
-      <p className="stat-label">{label}</p>
-      <p className={`stat-value${accent ? " accent" : ""}`}>{value}</p>
-      <p style={{ margin: "4px 0 0", fontSize: 11, color: "#8a8a8e" }}>{sub}</p>
-    </div>
-  );
-}
+const PLACEHOLDER = "Find VPs of Sales at SaaS companies that just raised Series B.";
 
-function LeadRow({ lead }: { lead: Lead }) {
-  const initials = (lead.name || "?").split(" ").slice(0, 2).map((n: string) => n[0]).join("").toUpperCase();
-  const scoreColor = lead.icp_score >= 8 ? "#166534" : lead.icp_score >= 5 ? "#92400e" : "#9f1239";
-  const scoreBg = lead.icp_score >= 8 ? "#f0fdf4" : lead.icp_score >= 5 ? "#fffbeb" : "#fff1f2";
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 20px", borderBottom: "1px solid #f0f0f2" }}>
-      <div style={{
-        width: 34, height: 34, borderRadius: "50%", background: "#fff0f2",
-        border: "1.5px solid #fecdd3", display: "flex", alignItems: "center",
-        justifyContent: "center", fontSize: 11, fontWeight: 700, color: "#D90429", flexShrink: 0,
-      }}>
-        {initials}
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#0a0a0a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {lead.name}
-        </p>
-        <p style={{ margin: 0, fontSize: 11, color: "#6b6b70", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {[lead.title, lead.company].filter(Boolean).join(" · ")}
-        </p>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-        {lead.icp_score != null && (
-          <span style={{ fontSize: 11, fontWeight: 700, width: 26, height: 26, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", background: scoreBg, color: scoreColor }}>
-            {lead.icp_score}
-          </span>
-        )}
-        {lead.linkedin_url && (
-          <a href={lead.linkedin_url} target="_blank" rel="noopener noreferrer"
-            style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#0077B5", textDecoration: "none", fontWeight: 500 }}>
-            <svg viewBox="0 0 24 24" fill="currentColor" width={13} height={13}>
-              <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/>
-            </svg>
-          </a>
-        )}
-        <Link href={`/outreach?ids=${lead.id}`}
-          style={{ fontSize: 11, color: "#D90429", textDecoration: "none", fontWeight: 600, background: "#fff0f2", padding: "4px 10px", borderRadius: 5 }}>
-          Message →
-        </Link>
-      </div>
-    </div>
-  );
-}
+const EXAMPLES = [
+  "Find YC W26 founders on LinkedIn who are building B2B SaaS",
+  "Find VPs of Sales at SaaS companies that just raised Series B",
+  "Find boutique VC firms with 2–10 partners in the US",
+];
 
-export default function Dashboard() {
-  const [stats, setStats] = useState<Stats | null>(() => peek<Stats>("stats") ?? null);
-  const [leads, setLeads] = useState<Lead[]>(() => peek<Lead[]>("home-leads") ?? []);
-  const [sendCap, setSendCap] = useState<SendCapStatus | null>(null);
-  const [funnel, setFunnel] = useState<FunnelData | null>(null);
-  const [loading, setLoading] = useState(!peek("stats") || !peek("home-leads"));
+export default function HomePage() {
+  const router = useRouter();
+  const [prompt, setPrompt] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [recent, setRecent] = useState<RecentSearch[]>([]);
 
   useEffect(() => {
-    const stale = isStale("stats") || isStale("home-leads");
-    if (!stale) { setLoading(false); return; }
-    Promise.all([
-      getStats(),
-      getRecentLeads(12),
-      getSendCap().catch(() => null),
-      getAnalyticsFunnel().catch(() => null),
-    ])
-      .then(([s, l, cap, f]) => {
-        setStats(s); put("stats", s);
-        setLeads(l); put("home-leads", l);
-        setSendCap(cap);
-        setFunnel(f);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
+    getRecentSearches().then(setRecent).catch(() => {});
   }, []);
 
-  const hasLeads = leads.length > 0;
+  const submit = async (text?: string) => {
+    const q = (text ?? prompt).trim();
+    if (!q || loading) return;
+    setLoading(true);
+    setError("");
+    try {
+      const s = await createSearch(q);
+      router.push(`/search/${s.id}`);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to start search");
+      setLoading(false);
+    }
+  };
 
   return (
-    <>
-      <div className="page-header">
-        <h1 className="page-title">Home</h1>
-        <Link href="/prospecting" className="btn-primary">
-          <svg viewBox="0 0 20 20" fill="currentColor" width={14} height={14}>
-            <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
-          </svg>
-          Find Leads
-        </Link>
+    <div className="hedwig-home">
+      <div className="hedwig-home-top">
+        <Link href="/">Get advice</Link>
+        <Link href="/settings">Settings</Link>
       </div>
 
-      <div style={{ padding: "0 40px 40px" }}>
+      <div className="hedwig-home-center">
+        <div className="hedwig-home-logo">
+          <TalonLogo variant="lockup" size={40} />
+        </div>
+        <h1>How can I find your perfect customers?</h1>
+        <p className="hedwig-home-sub">
+          Origami finds your leads — you send and track everything from Talon (LinkedIn + email), without leaving the app.
+        </p>
 
-        {/* Stats row */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 20 }}>
-          {loading && !stats ? Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="skeleton" style={{ height: 90, borderRadius: 10 }} />
-          )) : (
-            <>
-              <StatCard label="Total Leads" value={stats?.total_leads ?? 0} sub="in pipeline" />
-              <StatCard label="New This Week" value={stats?.leads_this_week ?? 0} sub="prospected" accent />
-              <StatCard label="Messages Sent" value={stats?.emails_sent ?? 0} sub="all sequences" />
-              <StatCard label="Reply Rate" value={`${funnel?.reply_rate ?? stats?.reply_rate ?? 0}%`} sub="contacted → replied" accent />
-            </>
-          )}
+        <div className="hedwig-home-prompt">
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                submit();
+              }
+            }}
+            placeholder={PLACEHOLDER}
+            rows={4}
+          />
+          <div className="hedwig-home-prompt-foot">
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Shift+Enter for new line</span>
+            <button type="button" className="hedwig-home-send" onClick={() => submit()} disabled={loading || !prompt.trim()}>
+              {loading ? "Starting…" : "Send"}
+            </button>
+          </div>
         </div>
 
-        {/* Send cap mini-bar */}
-        {sendCap && (
-          <div style={{ marginBottom: 20, padding: "10px 16px", background: sendCap.is_capped ? "#fff1f2" : "#f7f7f8", border: `1px solid ${sendCap.is_capped ? "#fecdd3" : "#e8e8ea"}`, borderRadius: 9, display: "flex", alignItems: "center", gap: 12, justifyContent: "space-between" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 13 }}>{sendCap.is_capped ? "🛑" : "📊"}</span>
-              <span style={{ fontSize: 12, color: sendCap.is_capped ? "#9f1239" : "#3a3a3c" }}>
-                <strong>Today's LinkedIn cap:</strong>{" "}
-                {sendCap.is_capped
-                  ? "Daily limit reached — resets at midnight UTC"
-                  : `${sendCap.sent_today} of ${sendCap.daily_cap} sent · ${sendCap.remaining_today} left`}
-              </span>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <div style={{ width: 100, height: 5, background: "#e8e8ea", borderRadius: 3, overflow: "hidden" }}>
-                <div style={{ height: "100%", width: `${Math.min(100, sendCap.pct_used)}%`, background: sendCap.is_capped ? "#D90429" : sendCap.pct_used >= 75 ? "#f59e0b" : "#22c55e", borderRadius: 3 }} />
-              </div>
-              <Link href="/analytics" style={{ fontSize: 11, color: "#D90429", fontWeight: 600, textDecoration: "none" }}>Analytics →</Link>
+        {error && <p style={{ color: "#b91c1c", fontSize: 13, marginTop: 16 }}>{error}</p>}
+
+        {recent.length > 0 && (
+          <div style={{ width: "100%", marginTop: 36 }}>
+            <p style={{ margin: "0 0 10px", fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", color: "var(--text-muted)" }}>
+              RECENT WORKSPACES
+            </p>
+            <div className="hedwig-recent-card">
+              {recent.map((s) => (
+                <Link key={s.id} href={`/search/${s.id}`} className="hedwig-recent-row">
+                  <p style={{ margin: 0, fontSize: 14, fontWeight: 500 }}>{s.prompt}</p>
+                  <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--text-muted)" }}>
+                    {s.lead_count} leads · {s.status_message || s.status}
+                  </p>
+                </Link>
+              ))}
             </div>
           </div>
         )}
 
-        {hasLeads ? (
-          /* ── Leads list (real prospected leads only) ── */
-          <div className="card" style={{ overflow: "hidden" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderBottom: "1px solid #e8e8ea" }}>
-              <div>
-                <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#0a0a0a" }}>People to reach out to</p>
-                <p style={{ margin: "2px 0 0", fontSize: 11, color: "#6b6b70" }}>{leads.length} new prospect{leads.length !== 1 ? "s" : ""} waiting</p>
-              </div>
-              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                <Link href="/sequences" style={{ fontSize: 12, color: "#0a0a0a", textDecoration: "none", fontWeight: 500, padding: "6px 12px", background: "#f5f5f7", border: "1.5px solid #e0e0e2", borderRadius: 7 }}>
-                  Run Sequence
-                </Link>
-                <Link href="/leads" style={{ fontSize: 12, color: "#D90429", textDecoration: "none", fontWeight: 600 }}>
-                  All leads →
-                </Link>
-              </div>
-            </div>
-            {leads.map(lead => <LeadRow key={lead.id} lead={lead} />)}
-          </div>
-        ) : (
-          /* ── Empty state: guide to getting started ── */
-          <div className="card" style={{ overflow: "hidden" }}>
-            <div style={{ padding: "56px 40px", textAlign: "center" }}>
-              <div style={{ width: 52, height: 52, borderRadius: 14, background: "#fff0f2", border: "2px solid #fecdd3", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
-                <svg viewBox="0 0 24 24" fill="#D90429" width={24} height={24}>
-                  <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/>
-                </svg>
-              </div>
-              <h2 style={{ margin: "0 0 8px", fontSize: 17, fontWeight: 700, color: "#0a0a0a" }}>No leads yet</h2>
-              <p style={{ margin: "0 0 32px", fontSize: 13, color: "#6b6b70", maxWidth: 380, marginLeft: "auto", marginRight: "auto" }}>
-                Find real LinkedIn profiles and they'll appear here ready for outreach.
-              </p>
-
-              {/* 3-step flow */}
-              <div style={{ display: "flex", gap: 0, justifyContent: "center", marginBottom: 36 }}>
-                {[
-                  { step: "1", label: "Connect LinkedIn", sub: "Sign in once in Settings — stays connected", href: "/settings", cta: "Settings" },
-                  { step: "2", label: "Prospect", sub: "Search for founders, operators, or any ICP", href: "/prospecting", cta: "Find Leads" },
-                  { step: "3", label: "Send Outreach", sub: "Run a sequence — connection + follow-up", href: "/sequences", cta: "View Sequences" },
-                ].map((s, i) => (
-                  <div key={s.step} style={{ display: "flex", alignItems: "stretch" }}>
-                    <div style={{ width: 220, padding: "20px 20px", textAlign: "left" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                        <span style={{ width: 22, height: 22, borderRadius: "50%", background: "#D90429", color: "#fff", fontSize: 11, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                          {s.step}
-                        </span>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: "#0a0a0a" }}>{s.label}</span>
-                      </div>
-                      <p style={{ margin: "0 0 14px", fontSize: 12, color: "#6b6b70", lineHeight: 1.6 }}>{s.sub}</p>
-                      <Link href={s.href} style={{ fontSize: 12, color: "#D90429", fontWeight: 600, textDecoration: "none" }}>{s.cta} →</Link>
-                    </div>
-                    {i < 2 && (
-                      <div style={{ display: "flex", alignItems: "center", padding: "0 4px" }}>
-                        <svg viewBox="0 0 20 20" fill="#d0d0d4" width={16} height={16}>
-                          <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
-                        </svg>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <Link href="/prospecting" className="btn-primary" style={{ display: "inline-flex" }}>
-                <svg viewBox="0 0 20 20" fill="currentColor" width={14} height={14}>
-                  <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
-                </svg>
-                Start Prospecting
-              </Link>
-            </div>
+        {recent.length === 0 && (
+          <div style={{ display: "grid", gap: 10, width: "100%", marginTop: 24 }}>
+            {EXAMPLES.map((ex) => (
+              <button
+                key={ex}
+                type="button"
+                onClick={() => submit(ex)}
+                disabled={loading}
+                style={{
+                  textAlign: "left",
+                  padding: "14px 16px",
+                  background: "#fff",
+                  border: "1px solid var(--border)",
+                  borderRadius: 10,
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontFamily: "inherit",
+                }}
+              >
+                {ex}
+              </button>
+            ))}
           </div>
         )}
       </div>
-    </>
+    </div>
   );
 }

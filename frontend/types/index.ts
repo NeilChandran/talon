@@ -88,9 +88,10 @@ export interface ProspectingJob {
   leads: Partial<Lead>[];
   total: number;
   query: string;
-  source?: "linkedin" | "ai" | "signal";
+  source?: "linkedin" | "ai" | "signal" | "playwright";
   mode?: string;
   error?: string;
+  scraper_status?: Record<string, string>;
 }
 
 export type SignalMode = "funded" | "jobs" | "competitor";
@@ -141,3 +142,196 @@ export interface ReplyCheckResult {
   replied_names: string[];
   error: string | null;
 }
+
+// ─── Campaign workspace (origami-style) ───────────────────────────────────────
+
+export type EnrollmentStatus =
+  | "pending"
+  | "connection_sent"
+  | "accepted"
+  | "dm_sent"
+  | "replied"
+  | "completed"
+  | "stopped"
+  | "failed";
+
+export interface Campaign {
+  id: string;
+  name: string;
+  connection_note_template: string;
+  message_template: string;
+  wait_days_after_accept: number;
+  is_active: boolean;
+  enrollment_count: number;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface CampaignEnrollment {
+  id: string;
+  campaign_id: string;
+  lead_id: string;
+  status: EnrollmentStatus;
+  connection_note: string | null;
+  follow_up_message: string | null;
+  connection_sent_at: string | null;
+  accepted_at: string | null;
+  dm_sent_at: string | null;
+  stopped_reason: string | null;
+  last_error: string | null;
+  name: string | null;
+  title: string | null;
+  company: string | null;
+  linkedin_url: string | null;
+  lead_status: LeadStatus | null;
+}
+
+export interface SuggestedAction {
+  id: string;
+  label: string;
+  action: string;
+}
+
+export interface AgentChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  suggested_actions: string[];
+  created_at: string;
+}
+
+export interface AgentChatResponse {
+  reply: string;
+  suggested_actions: SuggestedAction[];
+  campaign_updated: boolean;
+}
+
+export interface CampaignJob {
+  status: "pending" | "running" | "completed" | "failed" | "paused";
+  step?: string;
+  total: number;
+  done: number;
+  sent: number;
+  failed: number;
+  current: string | null;
+  error?: string;
+}
+
+// ─── Workspaces (Origami-style) ───────────────────────────────────────────────
+
+export interface Workspace {
+  id: string;
+  name: string;
+  icon_letter: string;
+  list_count: number;
+  created_at: string | null;
+  updated_at: string | null;
+  lists?: WorkspaceListMeta[];
+}
+
+export interface WorkspaceListMeta {
+  id: string;
+  name: string;
+  status: "idle" | "building" | "ready" | "failed";
+  build_step: string;
+  row_count: number;
+  icp_prompt: string;
+  updated_at?: string;
+}
+
+export interface ListLeadRow {
+  id: string;
+  lead_id: string | null;
+  first_name: string;
+  last_name: string;
+  title: string;
+  company: string;
+  email?: string;
+  linkedin_url: string;
+  icp_score: number;
+  score_reason?: string;
+}
+
+export interface WorkspaceListDetail extends WorkspaceListMeta {
+  workspace_id: string;
+  rows: ListLeadRow[];
+  build_job?: { status?: string; step?: string; count?: number; error?: string; origami_table_url?: string };
+  origami_meta?: { agentId?: string; tableId?: string; tableUrl?: string; runId?: string };
+}
+
+export interface WorkspaceChatResponse {
+  reply: string;
+  suggested_actions: SuggestedAction[];
+  apply_copy?: {
+    connection_note_template?: string;
+    message_template?: string;
+    wait_days_after_accept?: number;
+  };
+  campaign_id?: string;
+}
+
+export interface AppSettings {
+  instantly_campaign_id: string;
+  dry_run: boolean;
+  has_serper: boolean;
+  has_proxycurl: boolean;
+  has_instantly: boolean;
+  has_origami?: boolean;
+}
+
+export interface LaunchFromListResult {
+  campaign_id: string;
+  job_id: string;
+  enrolled: number;
+  status: string;
+}
+
+// ─── Explore (Origami-style) ──────────────────────────────────────────────────
+
+export interface ExploreEnrichmentCell {
+  value: string;
+  status: "loading" | "done" | "error";
+  meta?: Record<string, unknown>;
+}
+
+export interface ExploreRow {
+  id: string;
+  company_name: string;
+  website: string;
+  industry: string;
+  headcount: string;
+  location: string;
+  source: string;
+  fit_score: number;
+  enrichment: Record<string, ExploreEnrichmentCell>;
+  raw_data?: { signals?: string[]; raw_url?: string; sources?: string[] };
+  hidden?: boolean;
+}
+
+export interface ExploreChatMsg {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  meta?: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface ExploreSession {
+  id: string;
+  icp_prompt: string;
+  parsed_icp: Record<string, unknown>;
+  status: "idle" | "running" | "completed" | "failed";
+  scraper_status: Record<string, { status: string; error?: string | null; count: number }>;
+  filter_rules: Array<{ field: string; op: string; value: string }>;
+  enrichment_columns: Array<{ key: string; type: string; label?: string }>;
+  rows: ExploreRow[];
+  messages: ExploreChatMsg[];
+  created_at: string;
+}
+
+export type EnrichmentColumnType =
+  | "work_email"
+  | "phone"
+  | "tech_stack"
+  | "funding"
+  | "decision_maker_linkedin";

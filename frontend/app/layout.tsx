@@ -19,9 +19,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             theme: {
               extend: {
                 colors: {
-                  talon: { red: "#D90429", "red-hover": "#B8031F", "red-light": "#FFF0F2", "red-mid": "#FFD6DC" },
-                  surface: { DEFAULT: "#F5F5F7", white: "#FFFFFF", hover: "#F0F0F2", active: "#E8E8EB", border: "#E2E2E6", "border-dark": "#C8C8CE" },
-                  ink: { DEFAULT: "#1D1D1F", 2: "#3D3D40", 3: "#6E6E73", 4: "#98989D", 5: "#C7C7CC" },
+                  accent: { DEFAULT: "#6E56CF", hover: "#5B46B8", light: "#F4F0FF", mid: "#E4DEFF" },
                 },
                 fontFamily: { sans: ["Inter", "system-ui", "-apple-system", "sans-serif"] },
               }
@@ -31,11 +29,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300..900;1,14..32,300..900&display=swap" rel="stylesheet" />
+        <link rel="icon" href="/icon.svg" type="image/svg+xml" />
       </head>
-      <body className="bg-surface text-ink" style={{ minHeight: "100vh", display: "flex" }}>
+      <body style={{ minHeight: "100vh", display: "flex", margin: 0 }}>
         <DataPrefetcher />
         <Sidebar />
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh", background: "#fff" }}>
+        <div className="main-frame">
           {children}
         </div>
       </body>

@@ -30,9 +30,9 @@ function CharBar({ count, max = 300 }: { count: number; max?: number }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
       <div style={{ flex: 1, height: 4, background: "#f0f0f2", borderRadius: 4, overflow: "hidden" }}>
-        <div style={{ height: "100%", width: `${pct}%`, background: over ? "#D90429" : count > max * 0.85 ? "#f59e0b" : "#16a34a", borderRadius: 4, transition: "width 0.2s" }} />
+        <div style={{ height: "100%", width: `${pct}%`, background: over ? "#6E56CF" : count > max * 0.85 ? "#f59e0b" : "#16a34a", borderRadius: 4, transition: "width 0.2s" }} />
       </div>
-      <span style={{ fontSize: 11, fontFamily: "monospace", color: over ? "#D90429" : "#6b6b70", fontWeight: 600 }}>{count}/{max}</span>
+      <span style={{ fontSize: 11, fontFamily: "monospace", color: over ? "#6E56CF" : "#6b6b70", fontWeight: 600 }}>{count}/{max}</span>
     </div>
   );
 }
@@ -102,7 +102,7 @@ function OutreachContent() {
                 background: selectedIds.has(lead.id) ? "#fff5f6" : "#fff",
                 transition: "background 0.08s",
               }}>
-                <input type="checkbox" checked={selectedIds.has(lead.id)} onChange={() => toggle(lead.id)} style={{ accentColor: "#D90429", flexShrink: 0 }} />
+                <input type="checkbox" checked={selectedIds.has(lead.id)} onChange={() => toggle(lead.id)} style={{ accentColor: "#6E56CF", flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <p style={{ margin: 0, fontSize: 12, fontWeight: 500, color: "#0a0a0a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{lead.name}</p>
                   <p style={{ margin: 0, fontSize: 11, color: "#6b6b70", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{lead.company}</p>
@@ -139,11 +139,11 @@ function OutreachContent() {
                   style={{
                     display: "flex", flexDirection: "column", alignItems: "flex-start",
                     padding: "12px 14px", borderRadius: 8, cursor: "pointer", textAlign: "left",
-                    border: `1.5px solid ${seqType === opt.value ? "#D90429" : "#e8e8ea"}`,
+                    border: `1.5px solid ${seqType === opt.value ? "#6E56CF" : "#e8e8ea"}`,
                     background: seqType === opt.value ? "#fff5f6" : "#fff",
                     transition: "all 0.12s",
                   }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: seqType === opt.value ? "#D90429" : "#0a0a0a" }}>{opt.label}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: seqType === opt.value ? "#6E56CF" : "#0a0a0a" }}>{opt.label}</span>
                   <span style={{ fontSize: 11, color: "#6b6b70", marginTop: 2 }}>{opt.desc}</span>
                 </button>
               ))}
@@ -167,7 +167,7 @@ function OutreachContent() {
           <div className="card" style={{ padding: 16 }}>
             <p style={{ margin: "0 0 6px", fontSize: 12, fontWeight: 600, color: "#3a3a3c" }}>To automate sending</p>
             <p style={{ margin: 0, fontSize: 12, color: "#6b6b70", lineHeight: 1.6 }}>
-              Go to <strong style={{ color: "#0a0a0a" }}>Sequences</strong> → pick a sequence → click <strong style={{ color: "#D90429" }}>Run</strong> to connect and message everyone automatically.
+              Go to <strong style={{ color: "#0a0a0a" }}>Sequences</strong> → pick a sequence → click <strong style={{ color: "#6E56CF" }}>Run</strong> to connect and message everyone automatically.
             </p>
           </div>
         </div>
@@ -183,7 +183,7 @@ function OutreachContent() {
           <div style={{ maxHeight: 580, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
             {loading && (
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px 0" }}>
-                <div style={{ width: 32, height: 32, border: "3px solid #f0f0f2", borderTopColor: "#D90429", borderRadius: "50%", animation: "spin 0.8s linear infinite", marginBottom: 12 }} />
+                <div style={{ width: 32, height: 32, border: "3px solid #f0f0f2", borderTopColor: "#6E56CF", borderRadius: "50%", animation: "spin 0.8s linear infinite", marginBottom: 12 }} />
                 <p style={{ margin: 0, fontSize: 13, color: "#6b6b70" }}>Claude is personalizing messages...</p>
               </div>
             )}

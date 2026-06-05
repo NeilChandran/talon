@@ -3,6 +3,7 @@
 .env.local
 .env.*.local
 backend/.linkedin_session.json
+backend/talon_settings.json
 
 # ── Python ────────────────────────────────────────────────────────────────────
 backend/venv/
@@ -23,6 +24,9 @@ frontend/tsconfig.tsbuildinfo
 # ── Database ──────────────────────────────────────────────────────────────────
 *.db
 *.sqlite
+
+# ── Editor ────────────────────────────────────────────────────────────────────
+.cursor/
 
 # ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store

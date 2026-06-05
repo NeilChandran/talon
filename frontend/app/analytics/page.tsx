@@ -15,7 +15,7 @@ function SendCapRing({ cap }: { cap: SendCapStatus }) {
   const radius = 40;
   const circ = 2 * Math.PI * radius;
   const strokeDash = (cap.pct_used / 100) * circ;
-  const color = cap.pct_used >= 100 ? "#D90429" : cap.pct_used >= 75 ? "#f59e0b" : "#22c55e";
+  const color = cap.pct_used >= 100 ? "#6E56CF" : cap.pct_used >= 75 ? "#f59e0b" : "#22c55e";
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
@@ -60,7 +60,7 @@ function SendCapRing({ cap }: { cap: SendCapStatus }) {
 function Funnel({ data }: { data: FunnelData }) {
   const stages = data.funnel;
   const maxCount = stages[0]?.count || 1;
-  const colors = ["#D90429", "#f59e0b", "#0077B5", "#22c55e"];
+  const colors = ["#6E56CF", "#f59e0b", "#0077B5", "#22c55e"];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -120,7 +120,7 @@ function ActivityChart({ data }: { data: DayActivity[] }) {
               <div style={{
                 width: "100%",
                 height: Math.max(h, d.count > 0 ? 3 : 0),
-                background: today ? "#D90429" : "#e8e8ea",
+                background: today ? "#6E56CF" : "#e8e8ea",
                 borderRadius: "2px 2px 0 0",
                 transition: "height 0.5s ease",
                 minHeight: d.count > 0 ? 3 : 0,
@@ -184,7 +184,7 @@ function SequenceTable({ stats }: { stats: SequenceStat[] }) {
                 <td>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <div style={{ flex: 1, height: 5, background: "#f0f0f2", borderRadius: 3, overflow: "hidden" }}>
-                      <div style={{ height: "100%", width: `${s.success_rate}%`, background: s.success_rate >= 80 ? "#22c55e" : s.success_rate >= 50 ? "#f59e0b" : "#D90429", borderRadius: 3 }} />
+                      <div style={{ height: "100%", width: `${s.success_rate}%`, background: s.success_rate >= 80 ? "#22c55e" : s.success_rate >= 50 ? "#f59e0b" : "#6E56CF", borderRadius: 3 }} />
                     </div>
                     <span style={{ fontSize: 12, fontWeight: 600, color: "#0a0a0a", minWidth: 35 }}>{s.success_rate}%</span>
                   </div>

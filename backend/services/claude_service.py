@@ -351,3 +351,215 @@ async def batch_generate_emails(leads: List[Dict[str, Any]], sequence_type: str)
         email = await generate_email(lead, sequence_type)
         results.append({"lead_id": str(lead.get("id", "")), **email})
     return results
+
+
+async def agent_chat(
+    user_message: str,
+    context: Dict[str, Any],
+    history: List[Dict[str, str]],
+) -> Dict[str, Any]:
+    """
+    Revenue agent chat — understands campaigns, suggests actions, can update copy.
+    Returns {reply, suggested_actions[], apply_copy: {connection_note?, message?}}
+    """
+    campaign = context.get("campaign") or {}
+    stats = context.get("enrollment_stats") or {}
+    li_connected = context.get("linkedin_connected", False)
+
+    system_context = f"""You are Talon AI, a LinkedIn revenue agent (like Origami/Hedwig AI on origami.chat).
+You help the user run multi-step LinkedIn outreach campaigns: connection request + follow-up DM.
+
+Product context: {HEDWIG_CONTEXT}
+
+LinkedIn connected: {li_connected}
+Active campaign: {campaign.get('name', 'none')}
+Campaign ID: {campaign.get('id', '')}
+Enrollment stats: {json.dumps(stats)}
+Connection note template (current): {(campaign.get('connection_note_template') or '')[:400]}
+Follow-up DM template (current): {(campaign.get('message_template') or '')[:600]}
+Wait days after accept: {campaign.get('wait_days_after_accept', 1)}
+
+When the user asks to update copy, draft the FULL new templates in apply_copy.
+Use {{first_name}} and {{company}} placeholders.
+Connection notes must be ≤300 characters.
+
+Respond helpfully. After your message, the app will show suggested action buttons."""
+
+    hist_text = ""
+    for h in history[-8:]:
+        hist_text += f"{h['role'].upper()}: {h['content']}\n"
+
+    message = client.messages.create(
+        model=MODEL,
+        max_tokens=2048,
+        messages=[
+            {
+                "role": "user",
+                "content": f"""{system_context}
+
+Recent chat:
+{hist_text}
+
+USER: {user_message}
+
+Return ONLY valid JSON with:
+- reply: string (markdown ok, concise, actionable)
+- suggested_actions: array of {{id, label, action}} where action is one of:
+  launch_campaign, update_copy, check_replies, enroll_all, sync_campaign, open_settings
+- apply_copy: optional {{connection_note_template, message_template, wait_days_after_accept}}
+  only include fields you are intentionally changing based on user request""",
+            }
+        ],
+    )
+
+    text = message.content[0].text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        if start >= 0 and end > start:
+            return json.loads(text[start:end])
+        return {
+            "reply": text,
+            "suggested_actions": [
+                {"id": "1", "label": "Launch campaign sequences", "action": "launch_campaign"},
+            ],
+            "apply_copy": {},
+        }
+
+
+async def workspace_agent_chat(
+    user_message: str,
+    workspace: Dict[str, Any],
+    active_list: Optional[Dict[str, Any]],
+    rows_sample: List[Dict[str, Any]],
+    history: List[Dict[str, str]],
+    linkedin_connected: bool,
+) -> Dict[str, Any]:
+    """Origami workspace agent — draft lists, sequence copy, suggest launch."""
+    list_ctx = json.dumps(active_list or {}, indent=0)[:800]
+    rows_ctx = json.dumps(rows_sample[:6], indent=0)[:1200]
+
+    system_context = f"""You are Talon AI on origami.chat-style workspaces.
+The user describes ICPs, you help refine LinkedIn connection notes and follow-up DMs, and suggest launching sequences.
+
+Product: {HEDWIG_CONTEXT}
+LinkedIn connected: {linkedin_connected}
+Workspace: {workspace.get('name', '')} (id {workspace.get('id', '')})
+Active list: {list_ctx}
+Sample leads: {rows_ctx}
+
+When user asks to update messaging, put FULL templates in apply_copy with {{first_name}} and {{company}}.
+Connection notes ≤300 chars.
+
+Suggested actions: launch_sequences, update_copy, create_list, open_settings, check_replies."""
+
+    hist_text = ""
+    for h in history[-8:]:
+        hist_text += f"{h['role'].upper()}: {h['content']}\n"
+
+    message = client.messages.create(
+        model=MODEL,
+        max_tokens=2048,
+        messages=[
+            {
+                "role": "user",
+                "content": f"""{system_context}
+
+Recent chat:
+{hist_text}
+
+USER: {user_message}
+
+Return ONLY valid JSON:
+- reply: string (markdown ok)
+- suggested_actions: array of {{id, label, action}}
+- apply_copy: optional {{connection_note_template, message_template, wait_days_after_accept}}""",
+            }
+        ],
+    )
+
+    text = message.content[0].text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        if start >= 0 and end > start:
+            return json.loads(text[start:end])
+        return {
+            "reply": text,
+            "suggested_actions": [
+                {"id": "1", "label": "Launch LinkedIn sequences now", "action": "launch_sequences"},
+            ],
+            "apply_copy": {},
+        }
+
+
+async def workspace_agent_chat(
+    user_message: str,
+    workspace: Dict[str, Any],
+    active_list: Optional[Dict[str, Any]],
+    rows_sample: List[Dict[str, Any]],
+    history: List[Dict[str, str]],
+    linkedin_connected: bool,
+) -> Dict[str, Any]:
+    """Origami workspace agent — draft lists, sequence copy, suggest launch."""
+    list_ctx = json.dumps(active_list or {}, indent=0)[:800]
+    rows_ctx = json.dumps(rows_sample[:6], indent=0)[:1200]
+
+    system_context = f"""You are Talon AI on origami.chat-style workspaces.
+The user describes ICPs, you help refine LinkedIn connection notes and follow-up DMs, and suggest launching sequences.
+
+Product: {HEDWIG_CONTEXT}
+LinkedIn connected: {linkedin_connected}
+Workspace: {workspace.get('name', '')} (id {workspace.get('id', '')})
+Active list: {list_ctx}
+Sample leads: {rows_ctx}
+
+When user asks to update messaging, put FULL templates in apply_copy with {{first_name}} and {{company}}.
+Connection notes ≤300 chars.
+
+Suggested actions: launch_sequences, update_copy, create_list, open_settings, check_replies."""
+
+    hist_text = ""
+    for h in history[-8:]:
+        hist_text += f"{h['role'].upper()}: {h['content']}\n"
+
+    message = client.messages.create(
+        model=MODEL,
+        max_tokens=2048,
+        messages=[
+            {
+                "role": "user",
+                "content": f"""{system_context}
+
+Recent chat:
+{hist_text}
+
+USER: {user_message}
+
+Return ONLY valid JSON:
+- reply: string (markdown ok)
+- suggested_actions: array of {{id, label, action}}
+- apply_copy: optional {{connection_note_template, message_template, wait_days_after_accept}}""",
+            }
+        ],
+    )
+
+    text = message.content[0].text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        if start >= 0 and end > start:
+            return json.loads(text[start:end])
+        return {
+            "reply": text,
+            "suggested_actions": [
+                {"id": "1", "label": "Launch LinkedIn sequences now", "action": "launch_sequences"},
+            ],
+            "apply_copy": {},
+        }

@@ -140,18 +140,90 @@ def _client(li_at: str, jsessionid: str, bcookie: str = "", bscookie: str = "", 
     )
 
 
-def _client_from_session(sess: Dict[str, Any]) -> httpx.AsyncClient:
-    """Create a Voyager API client from a loaded session dict, including all saved cookies."""
-    # Any extra cookies beyond li_at/jsessionid/bcookie/bscookie
+def _extra_cookies_from_session(sess: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """All browser cookies beyond the core four — required for many Voyager write calls."""
     known = {"li_at", "jsessionid", "bcookie", "bscookie", "name", "headline", "linkedin_url"}
     extra = {k: v for k, v in sess.items() if k not in known and isinstance(v, str) and v}
+    return extra if extra else None
+
+
+def _client_from_session(sess: Dict[str, Any]) -> httpx.AsyncClient:
+    """Create a Voyager API client from a loaded session dict, including all saved cookies."""
     return _client(
         sess["li_at"],
-        sess.get("jsessionid", ""),
+        sess.get("jsessionid", "ajax:0"),
         sess.get("bcookie", ""),
         sess.get("bscookie", ""),
-        extra_cookies=extra if extra else None,
+        extra_cookies=_extra_cookies_from_session(sess),
     )
+
+
+def _parse_me_response(data: Dict[str, Any]) -> Dict[str, str]:
+    """Extract profile fields from /voyager/api/me JSON."""
+    mini = data.get("miniProfile") or data.get("data", {}).get("miniProfile") or {}
+    if not mini:
+        for item in data.get("included", []):
+            if "firstName" in item or item.get("$type", "").endswith("MiniProfile"):
+                mini = item
+                break
+    first = mini.get("firstName", "") or mini.get("localizedFirstName", "")
+    last = mini.get("lastName", "") or mini.get("localizedLastName", "")
+    name = f"{first} {last}".strip()
+    pub = mini.get("publicIdentifier", "")
+    occupation = mini.get("occupation", "") or mini.get("headline", "")
+    return {
+        "name": name or "LinkedIn User",
+        "headline": occupation,
+        "linkedin_url": f"https://linkedin.com/in/{pub}" if pub else "",
+    }
+
+
+async def _validate_via_httpx(
+    li_at: str,
+    jsessionid: str,
+    bcookie: str = "",
+    bscookie: str = "",
+    extra_cookies: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Fast session check via Voyager API (no Chrome)."""
+    js = (jsessionid or "ajax:0").strip().strip('"')
+    try:
+        async with _client(li_at, js, bcookie, bscookie, extra_cookies) as c:
+            resp = await c.get(f"{BASE_URL}/voyager/api/me")
+
+        if resp.is_redirect:
+            return {"valid": False, "error": "Session expired — sign in again in Settings"}
+        if resp.status_code in (401, 403):
+            return {
+                "valid": False,
+                "error": "LinkedIn rejected cookies — use browser login or paste fresh li_at + JSESSIONID",
+            }
+        if resp.status_code != 200:
+            return {"valid": False, "error": f"LinkedIn returned HTTP {resp.status_code}"}
+
+        # Refresh JSESSIONID from response if LinkedIn rotated it
+        new_js = js
+        for name, value in resp.cookies.items():
+            if name == "JSESSIONID":
+                new_js = value.strip('"')
+                break
+
+        try:
+            data = resp.json()
+        except Exception:
+            return {"valid": False, "error": "Invalid response from LinkedIn"}
+
+        profile = _parse_me_response(data)
+
+        return {
+            "valid": True,
+            "jsessionid": new_js,
+            **profile,
+        }
+    except httpx.TimeoutException:
+        return {"valid": False, "error": "LinkedIn timed out — check your network"}
+    except Exception as e:
+        return {"valid": False, "error": str(e)}
 
 
 _CDP_PORT = 9223          # The ONE persistent Chrome browser (login + search)
@@ -431,15 +503,13 @@ async def setup_session(
     Both cookies must be pasted from Chrome DevTools → Application → Cookies → linkedin.com.
     """
     li_at = li_at.strip()
-    # Normalize JSESSIONID: strip surrounding quotes, keep the ajax:... value
-    jsessionid = jsessionid.strip().strip('"')
-    if not jsessionid:
-        return {
-            "valid": False,
-            "error": "Paste your JSESSIONID cookie value from Chrome DevTools",
-        }
+    if not li_at:
+        return {"valid": False, "error": "Paste your li_at cookie value from Chrome DevTools"}
 
-    print(f"[linkedin] setup_session: calling /voyager/api/me with httpx...", flush=True)
+    # Normalize JSESSIONID; default ajax:0 if user only pasted li_at (often still works)
+    jsessionid = (jsessionid or "ajax:0").strip().strip('"')
+
+    print(f"[linkedin] setup_session: validating via Voyager API...", flush=True)
     result = await validate_session(li_at, jsessionid, bcookie, bscookie)
 
     if result.get("valid"):
@@ -505,17 +575,17 @@ def _validate_via_browser_sync(li_at: str, jsessionid: str, bcookie: str = "", b
             send("Page.addScriptToEvaluateOnNewDocument", {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"})
 
             # Set cookies
-            cookies = [{"name": "li_at", "value": li_at, "domain": ".www.linkedin.com", "path": "/", "secure": True, "httpOnly": True}]
-            j = jsessionid.strip('"')
-            cookies.append({"name": "JSESSIONID", "value": f'"{j}"', "domain": ".www.linkedin.com", "path": "/", "secure": True})
+            cookies = [{"name": "li_at", "value": li_at, "domain": ".linkedin.com", "path": "/", "secure": True, "httpOnly": True}]
+            j = jsessionid.strip('"') or "ajax:0"
+            cookies.append({"name": "JSESSIONID", "value": j, "domain": ".linkedin.com", "path": "/", "secure": True})
             if bcookie:
-                cookies.append({"name": "bcookie", "value": f'"{bcookie.strip(chr(34))}"', "domain": ".www.linkedin.com", "path": "/", "secure": True})
+                cookies.append({"name": "bcookie", "value": bcookie.strip().strip('"'), "domain": ".linkedin.com", "path": "/", "secure": True})
             if bscookie:
-                cookies.append({"name": "bscookie", "value": f'"{bscookie.strip(chr(34))}"', "domain": ".www.linkedin.com", "path": "/", "secure": True})
+                cookies.append({"name": "bscookie", "value": bscookie.strip().strip('"'), "domain": ".linkedin.com", "path": "/", "secure": True})
             if extra:
                 for k, v in extra.items():
                     if isinstance(v, str) and v:
-                        cookies.append({"name": k, "value": v, "domain": ".www.linkedin.com", "path": "/", "secure": True})
+                        cookies.append({"name": k, "value": v.strip().strip('"'), "domain": ".linkedin.com", "path": "/", "secure": True})
 
             recv_id(send("Network.setCookies", {"cookies": cookies}), 4)
 
@@ -591,16 +661,30 @@ async def validate_session(
     bscookie: str = "",
     extra_cookies: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
-    """Check if the LinkedIn session is valid using a real Chrome browser."""
+    """Check LinkedIn session — httpx first (fast), Chrome fallback."""
+    result = await _validate_via_httpx(li_at, jsessionid, bcookie, bscookie, extra_cookies)
+    if result.get("valid"):
+        return result
+
+    httpx_err = result.get("error", "")
+    print(f"[linkedin] httpx validation failed ({httpx_err}), trying Chrome...", flush=True)
+
     loop = asyncio.get_event_loop()
     try:
-        return await loop.run_in_executor(
+        browser_result = await loop.run_in_executor(
             _pw_executor,
             _validate_via_browser_sync,
-            li_at, jsessionid, bcookie, bscookie, extra_cookies,
+            li_at, jsessionid or "ajax:0", bcookie, bscookie, extra_cookies,
         )
+        if browser_result.get("valid"):
+            browser_result["jsessionid"] = (jsessionid or "ajax:0").strip().strip('"')
+            return browser_result
+        return {
+            "valid": False,
+            "error": browser_result.get("error") or httpx_err or "Session invalid",
+        }
     except Exception as e:
-        return {"valid": False, "error": str(e)}
+        return {"valid": False, "error": httpx_err or str(e)}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1392,55 +1476,109 @@ async def lookup_profile(
 ) -> Optional[Dict[str, str]]:
     """
     Look up a LinkedIn profile by public identifier.
+    Tries the legacy Voyager endpoint first, then the newer dash endpoint as fallback.
     Returns {"linkedin_profile_id": "ACoAAA...", "linkedin_member_id": "12345"}
     or None if not found.
     """
-    try:
-        async with _client(li_at, jsessionid, bcookie, bscookie) as c:
-            resp = await c.get(
-                f"{BASE_URL}/voyager/api/identity/profiles/{public_id}",
-            )
-
-        if resp.is_redirect:
-            loc = resp.headers.get("location", "")
-            print(f"[linkedin] profile lookup redirected to {loc} — session expired or invalid", flush=True)
-            return None
-
-        if resp.status_code == 401:
-            print(f"[linkedin] profile lookup 401 — session expired", flush=True)
-            return None
-
-        if resp.status_code == 403:
-            print(f"[linkedin] profile lookup 403 — CSRF/auth issue", flush=True)
-            return None
-
-        if resp.status_code != 200:
-            print(f"[linkedin] profile lookup {public_id!r} → HTTP {resp.status_code}: {resp.text[:200]}", flush=True)
-            return None
-
-        data = resp.json()
-
-        # entityUrn: "urn:li:fs_profile:ACoAA..."
+    def _parse_ids(data: dict) -> Optional[Dict[str, str]]:
+        """Extract profile_id and member_id from a Voyager API response."""
         entity_urn = data.get("entityUrn", "")
         profile_id = entity_urn.split(":")[-1] if entity_urn else ""
-
-        # objectUrn: "urn:li:member:12345"
         object_urn = data.get("objectUrn", "")
         member_id = object_urn.split(":")[-1] if object_urn else ""
 
         if not profile_id:
-            # Try miniProfile nested format
             mini = data.get("miniProfile") or {}
             entity_urn = mini.get("entityUrn", "")
             profile_id = entity_urn.split(":")[-1] if entity_urn else ""
             object_urn = mini.get("objectUrn", "")
             member_id = object_urn.split(":")[-1] if object_urn else ""
 
-        if profile_id:
-            print(f"[linkedin] resolved {public_id!r} → profile_id={profile_id}", flush=True)
-            return {"linkedin_profile_id": profile_id, "linkedin_member_id": member_id}
+        if not profile_id:
+            # Dash endpoint wraps in "elements"
+            for el in data.get("elements", []):
+                urn = el.get("entityUrn", "") or el.get("*profileView", "")
+                if "ACoA" in urn or "fs_profile" in urn:
+                    profile_id = urn.split(":")[-1]
+                    member_id = ""
+                    break
 
-        print(f"[linkedin] profile lookup {public_id!r} returned no IDs in response", flush=True)
+        return {"linkedin_profile_id": profile_id, "linkedin_member_id": member_id} if profile_id else None
+
+    api_endpoints = [
+        ("legacy", f"{BASE_URL}/voyager/api/identity/profiles/{public_id}"),
+        # Newer dash endpoint — works for profiles that return 410 on old endpoint
+        ("dash", f"{BASE_URL}/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity={public_id}&decorationId=com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-93"),
+    ]
+
+    try:
+        async with _client(li_at, jsessionid, bcookie, bscookie) as c:
+            # ── Try API endpoints first ───────────────────────────────────────
+            auth_failed = False
+            for label, url in api_endpoints:
+                resp = await c.get(url)
+
+                if resp.is_redirect:
+                    print(f"[linkedin] profile lookup ({label}) redirected — session expired", flush=True)
+                    auth_failed = True
+                    break
+                if resp.status_code in (401, 403):
+                    print(f"[linkedin] profile lookup ({label}) {resp.status_code} — auth issue", flush=True)
+                    auth_failed = True
+                    break
+                if resp.status_code == 410:
+                    print(f"[linkedin] profile lookup ({label}) 410 for {public_id!r} — trying next", flush=True)
+                    continue
+                if resp.status_code != 200:
+                    print(f"[linkedin] profile lookup ({label}) {public_id!r} → HTTP {resp.status_code}", flush=True)
+                    continue
+
+                ids = _parse_ids(resp.json())
+                if ids:
+                    print(f"[linkedin] resolved {public_id!r} via {label} → {ids['linkedin_profile_id']}", flush=True)
+                    return ids
+
+                print(f"[linkedin] {label} response had no IDs for {public_id!r}", flush=True)
+
+            if auth_failed:
+                return None
+
+            # ── Fallback: scrape profile ID from the profile page HTML ────────
+            # LinkedIn embeds profile data as JSON in the page — extract from there.
+            # This works for profiles that return 410 via Voyager but are live publicly.
+            print(f"[linkedin] API endpoints failed — scraping profile page for {public_id!r}", flush=True)
+            page_resp = await c.get(
+                f"{BASE_URL}/in/{public_id}",
+                headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
+                follow_redirects=True,
+            )
+            if page_resp.status_code == 200:
+                html = page_resp.text
+                # LinkedIn embeds profile URN in the page as "urn:li:fs_profile:ACoAAA..."
+                import re as _re
+                urn_match = _re.search(r'urn:li:fs_profile:(ACoA[A-Za-z0-9_-]+)', html)
+                if urn_match:
+                    profile_id = urn_match.group(1)
+                    # Also try to find member ID: "urn:li:member:12345"
+                    member_match = _re.search(r'urn:li:member:(\d+)', html)
+                    member_id = member_match.group(1) if member_match else ""
+                    print(f"[linkedin] scraped {public_id!r} from page → {profile_id}", flush=True)
+                    return {"linkedin_profile_id": profile_id, "linkedin_member_id": member_id}
+
+                # Also try the fsd_profile format
+                fsd_match = _re.search(r'urn:li:fsd_profile:(ACoA[A-Za-z0-9_-]+)', html)
+                if fsd_match:
+                    profile_id = fsd_match.group(1)
+                    member_match = _re.search(r'urn:li:member:(\d+)', html)
+                    member_id = member_match.group(1) if member_match else ""
+                    print(f"[linkedin] scraped (fsd) {public_id!r} from page → {profile_id}", flush=True)
+                    return {"linkedin_profile_id": profile_id, "linkedin_member_id": member_id}
+
+                print(f"[linkedin] profile page loaded but no URN found for {public_id!r}", flush=True)
+            else:
+                print(f"[linkedin] profile page HTTP {page_resp.status_code} for {public_id!r}", flush=True)
+
+        print(f"[linkedin] all methods failed for {public_id!r}", flush=True)
         return None
 
     except Exception as e:
@@ -1476,6 +1614,7 @@ async def send_connection_request(
     jsessionid: str,
     bcookie: str = "",
     bscookie: str = "",
+    extra_cookies: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     Send a LinkedIn connection request with a personalised note.
@@ -1502,7 +1641,7 @@ async def send_connection_request(
         async with httpx.AsyncClient(
             timeout=15.0,
             headers=hdrs,
-            cookies=_cookies(li_at, jsessionid, bcookie, bscookie),
+            cookies=_cookies(li_at, jsessionid, bcookie, bscookie, extra_cookies),
             follow_redirects=False,
         ) as c:
             resp = await c.post(
@@ -1519,14 +1658,39 @@ async def send_connection_request(
         if resp.status_code == 429:
             return {"success": False, "error": "Rate limited by LinkedIn — slow down and retry later"}
         if resp.status_code == 403:
-            return {"success": False, "error": f"Auth error (403) — try reconnecting LinkedIn in Settings"}
+            body = resp.text[:200]
+            if "FUSE" in body or "limit" in body.lower():
+                return {"success": False, "error": "LinkedIn weekly connection limit reached"}
+            return {
+                "success": False,
+                "error": "Auth error (403) — disconnect and use Sign in with LinkedIn in Settings",
+            }
         if resp.status_code == 400:
             detail = resp.text[:300]
-            return {"success": False, "error": f"Bad request (400): {detail}"}
+            if "CUSTOM_MESSAGE_TOO_LONG" in detail:
+                return {"success": False, "error": "Connection note too long (max 300 chars)"}
+            if "INVITATION_ALREADY_SENT" in detail or "already" in detail.lower():
+                return {"success": False, "error": "Connection request already sent to this person"}
+            return {"success": False, "error": f"Bad request: {detail[:120]}"}
         return {"success": False, "error": f"HTTP {resp.status_code}", "detail": resp.text[:300]}
 
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+async def send_connection_request_from_session(
+    sess: Dict[str, Any], profile_id: str, note: str
+) -> Dict[str, Any]:
+    """Send connection request using full saved session (all cookies)."""
+    return await send_connection_request(
+        profile_id=profile_id,
+        note=note,
+        li_at=sess["li_at"],
+        jsessionid=sess.get("jsessionid", "ajax:0"),
+        bcookie=sess.get("bcookie", ""),
+        bscookie=sess.get("bscookie", ""),
+        extra_cookies=_extra_cookies_from_session(sess),
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1540,6 +1704,7 @@ async def send_message(
     jsessionid: str,
     bcookie: str = "",
     bscookie: str = "",
+    extra_cookies: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     Send a LinkedIn direct message to an existing connection.
@@ -1571,7 +1736,7 @@ async def send_message(
         async with httpx.AsyncClient(
             timeout=15.0,
             headers=hdrs,
-            cookies=_cookies(li_at, jsessionid, bcookie, bscookie),
+            cookies=_cookies(li_at, jsessionid, bcookie, bscookie, extra_cookies),
             follow_redirects=False,
         ) as c:
             resp = await c.post(
@@ -1589,11 +1754,28 @@ async def send_message(
         if resp.status_code == 429:
             return {"success": False, "error": "Rate limited — slow down and retry later"}
         if resp.status_code == 403:
-            return {"success": False, "error": "Auth error (403) — try reconnecting LinkedIn in Settings"}
+            return {
+                "success": False,
+                "error": "Cannot message (403) — must be connected first, or reconnect in Settings",
+            }
         return {"success": False, "error": f"HTTP {resp.status_code}", "detail": resp.text[:300]}
 
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+async def send_message_from_session(
+    sess: Dict[str, Any], member_id: str, message: str
+) -> Dict[str, Any]:
+    return await send_message(
+        member_id=member_id,
+        message=message,
+        li_at=sess["li_at"],
+        jsessionid=sess.get("jsessionid", "ajax:0"),
+        bcookie=sess.get("bcookie", ""),
+        bscookie=sess.get("bscookie", ""),
+        extra_cookies=_extra_cookies_from_session(sess),
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1603,3 +1785,46 @@ async def send_message(
 async def human_delay(min_s: float = 3.0, max_s: float = 8.0) -> None:
     """Sleep a random human-paced interval to avoid rate limits."""
     await asyncio.sleep(random.uniform(min_s, max_s))
+
+
+async def check_connection_accepted(
+    member_id: str,
+    li_at: str,
+    jsessionid: str,
+    bcookie: str = "",
+    bscookie: str = "",
+) -> bool:
+    """
+    Return True if we appear to be 1st-degree connected (can message).
+    Uses the messaging conversations endpoint — a thread existing implies connection.
+    """
+    if not member_id:
+        return False
+    url = (
+        f"{BASE_URL}/voyager/api/messaging/conversations"
+        f"?q=participants&recipients=urn:li:member:{member_id}"
+    )
+    try:
+        async with httpx.AsyncClient(
+            timeout=12.0,
+            headers=_headers(jsessionid),
+            cookies=_cookies(li_at, jsessionid, bcookie, bscookie),
+            follow_redirects=False,
+        ) as c:
+            resp = await c.get(url)
+        if resp.is_redirect or resp.status_code in (401, 403):
+            return False
+        if resp.status_code != 200:
+            return False
+        data = resp.json()
+        elements = data.get("elements") or data.get("data", {}).get("*elements") or []
+        if elements:
+            return True
+        # Fallback: included conversations
+        included = data.get("included") or []
+        for item in included:
+            if item.get("$type", "").endswith("Conversation") or "conversation" in str(item.get("entityUrn", "")).lower():
+                return True
+        return False
+    except Exception:
+        return False
