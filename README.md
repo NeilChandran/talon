@@ -31,7 +31,7 @@ The motivation is direct: as a founder building an early-stage startup, we neede
 | AI | Anthropic Claude — lead scoring, note generation, agent chat |
 | Research | Origami API v2 — people search, table sync, sequencer |
 
-**Features that work today:**
+**Features:**
 
 - Plain-English ICP prompt → Origami agent run → live lead table populated in real time
 - Per-lead 2-step sequence (connection request + follow-up) with status tracking: Drafted, Scheduled, In Progress, Sent, Replied
