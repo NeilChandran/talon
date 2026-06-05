@@ -13,41 +13,6 @@ Existing tools solve one piece. Apollo and ZoomInfo give you lists but no outrea
 
 Talon does. You describe your ideal customer in plain English, get a live-sourced table of matched people back in seconds, review personalized connection notes generated for each one, and launch the full sequence without leaving the app.
 
-The motivation is direct: B2B companies ICP is founders and operators at startups/enterprises. We needed a repeatable way to find them and reach them on LinkedIn. We built Talon to solve our own outbound problem and turned it into a standalone tool.
-
----
-
-## Execution & Technical Work
-
-**What was built:** A full-stack web app (Next.js 14 + FastAPI) used for real outreach campaigns, not a prototype.
-
-**Stack:**
-
-| Layer | Implementation |
-|---|---|
-| Frontend | Next.js App Router, TypeScript |
-| Backend | FastAPI, async Python |
-| Database | Supabase (Postgres) with SQLite fallback |
-| AI | Anthropic Claude — lead scoring, note generation, agent chat |
-| Research | Origami API v2 — people search, table sync, sequencer |
-
-**Features that work today:**
-
-- Plain-English ICP prompt → Origami agent run → live lead table populated in real timeClaude's response was interrupted.Try againYou said: get rid of hedwig at all just say building startup that can use thisget rid of hedwig at all just say building startup that can use this1:02 AMClaude responded: Home → type "find founders of series b startups"markdown# Talon — AI-Native Outbound Agents
-
-**Repo:** github.com/NeilChandran/talon  
-**Demo video:** https://drive.google.com/file/d/18TQxJRrnpxKec2hCpj6zO_H68BNsu2Ra/view?usp=sharing
-
----
-
-## Problem & Insight
-
-Founders doing outbound face three sequential bottlenecks. First, finding ICP-matched people is manual — LinkedIn search requires dozens of filtered queries to surface the right profiles. Second, writing personalized connection notes under 300 characters for each person takes hours. Third, tracking who got messaged, who accepted, and who replied lives in spreadsheets or nowhere at all.
-
-Existing tools solve one piece. Apollo and ZoomInfo give you lists but no outreach. LinkedIn Sales Navigator gives you search but no copy. Outreach tools like Instantly handle sequencing but require you to bring your own leads and write your own messages. Nothing closes the loop from ICP description to sent message to reply tracking in one place.
-
-Talon does. You describe your ideal customer in plain English, get a live-sourced table of matched people back in seconds, review personalized connection notes generated for each one, and launch the full sequence without leaving the app.
-
 The motivation is direct: as a founder building an early-stage startup, we needed a repeatable way to find our target customers and reach them on LinkedIn without hand-copying drafts into another product. We built Talon to solve our own outbound problem and turned it into a standalone tool.
 
 ---
