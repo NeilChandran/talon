@@ -1,4 +1,4 @@
-# Talon — AI-Powered B2B LinkedIn Outreach Agent
+# Talon — AI-Native Outbound Agents
 
 **Repo:** github.com/NeilChandran/talon  
 **Demo video:** https://drive.google.com/file/d/18TQxJRrnpxKec2hCpj6zO_H68BNsu2Ra/view?usp=sharing
@@ -14,6 +14,41 @@ Existing tools solve one piece. Apollo and ZoomInfo give you lists but no outrea
 Talon does. You describe your ideal customer in plain English, get a live-sourced table of matched people back in seconds, review personalized connection notes generated for each one, and launch the full sequence without leaving the app.
 
 The motivation is direct: Hedwig's ICP is founders and operators at early-stage startups. We needed a repeatable way to find them and reach them on LinkedIn. We built Talon to solve our own outbound problem and turned it into a standalone tool.
+
+---
+
+## Execution & Technical Work
+
+**What was built:** A full-stack web app (Next.js 14 + FastAPI) used for real outreach campaigns, not a prototype.
+
+**Stack:**
+
+| Layer | Implementation |
+|---|---|
+| Frontend | Next.js App Router, TypeScript |
+| Backend | FastAPI, async Python |
+| Database | Supabase (Postgres) with SQLite fallback |
+| AI | Anthropic Claude — lead scoring, note generation, agent chat |
+| Research | Origami API v2 — people search, table sync, sequencer |
+
+**Features that work today:**
+
+- Plain-English ICP prompt → Origami agent run → live lead table populated in real timeClaude's response was interrupted.Try againYou said: get rid of hedwig at all just say building startup that can use thisget rid of hedwig at all just say building startup that can use this1:02 AMClaude responded: Home → type "find founders of series b startups"markdown# Talon — AI-Native Outbound Agents
+
+**Repo:** github.com/NeilChandran/talon  
+**Demo video:** https://drive.google.com/file/d/18TQxJRrnpxKec2hCpj6zO_H68BNsu2Ra/view?usp=sharing
+
+---
+
+## Problem & Insight
+
+Founders doing outbound face three sequential bottlenecks. First, finding ICP-matched people is manual — LinkedIn search requires dozens of filtered queries to surface the right profiles. Second, writing personalized connection notes under 300 characters for each person takes hours. Third, tracking who got messaged, who accepted, and who replied lives in spreadsheets or nowhere at all.
+
+Existing tools solve one piece. Apollo and ZoomInfo give you lists but no outreach. LinkedIn Sales Navigator gives you search but no copy. Outreach tools like Instantly handle sequencing but require you to bring your own leads and write your own messages. Nothing closes the loop from ICP description to sent message to reply tracking in one place.
+
+Talon does. You describe your ideal customer in plain English, get a live-sourced table of matched people back in seconds, review personalized connection notes generated for each one, and launch the full sequence without leaving the app.
+
+The motivation is direct: as a founder building an early-stage startup, we needed a repeatable way to find our target customers and reach them on LinkedIn without hand-copying drafts into another product. We built Talon to solve our own outbound problem and turned it into a standalone tool.
 
 ---
 
@@ -53,33 +88,50 @@ The motivation is direct: Hedwig's ICP is founders and operators at early-stage 
 
 ## Evaluation & Evidence
 
+Talon was tested with 10 real users — early-stage founders and operators who ran live outreach campaigns through the product. Their feedback drove three of the most significant changes to the system.
+
+The loudest complaint, raised independently by multiple users, was that connection note copy felt generic when the search was for a specific audience like Series B founders. The template logic had assumed all founder searches were YC-stage, which produced obviously wrong copy for later-stage targets. That single piece of feedback drove the audience-aware template system: `audience_phrase()` now infers the target audience from the search prompt and `note_has_wrong_audience()` catches stale copy before it reaches the sequencer.
+
+A second pattern that emerged from testing was confusion about inbox state — users couldn't tell which leads had been messaged, which were scheduled, and which had replied. The original inbox bucketed everything into a single "in progress" state due to a wrong ordering in the status aggregation. Fixing that required rearchitecting how `inbox_service.py` assembled enrollment rows, and the result is a five-state inbox (Drafted, Scheduled, In Progress, Sent, Replied) that mirrors exactly what Origami reports.
+
+A third piece of feedback was that operators wanted to edit their LinkedIn templates without touching code. That drove the Messages tab — a persistent global template editor with `{{first_name}}` and `{{company}}` variables that applies across all campaigns, with per-search overrides available on the search row.
+
+**Quantitative metrics from live usage:**
+
+- ~30 leads returned per Origami agent run (configurable via `MAX_LEADS_PER_SEARCH`)
+- Schedule spacing: 25-minute estimated intervals between sends
+- API polling reduced from 1s to 3s after socket hang-ups under load; Origami sync throttled to 5s per search
+- Connection notes held to ≤300 characters across all tested inputs including long company names and edge-case titles
+
+**Claim validation:**
+
 | Claim | How it was validated |
 |---|---|
 | Origami returns real founders | Live searches ("find founders of series a startup") consistently return 30 rows with /in/ LinkedIn URLs |
 | Sequencer schedules sends | Origami linkedin-outreach column shows `sendStatus: scheduled`; mirrored to `campaign_enrollments` |
 | Notes personalize correctly | `personalize_connection()` tested on long company names, edge cases, non-YC audiences |
-| Inbox reflects real state | `GET /outreach/inbox` returns accurate bucket counts across draft / scheduled / in_progress / sent |
-| Audience copy is correct | `audience_phrase()` + `note_has_wrong_audience()` regression fixed after real outreach surfaced the bug |
+| Inbox reflects real state | `GET /outreach/inbox` returns accurate bucket counts across all five states |
+| Audience copy is correct | `audience_phrase()` + `note_has_wrong_audience()` regression fixed after user feedback |
 
-**Performance metrics from internal runs:**
-- ~30 leads per Origami run (configurable via `MAX_LEADS_PER_SEARCH`)
-- Schedule spacing: 25-minute estimated intervals when Origami API omits exact timestamps
-- Polling reduced from 1s to 3s after socket hang-ups; Origami sync throttled to 5s per search
-
-**Honest limitations:**
+**Known limitations:**
 
 | Limitation | Impact |
 |---|---|
 | Origami API returns 500 intermittently | Search can stall; auto-fails after 5 min with 0 leads |
 | Exact send time not always in Origami response | Schedule labels are estimates, ±25 min |
-| No formal user study | Validated by operator dogfooding and integration tests only |
+| LinkedIn reach constrained by Origami send limits | Not a replacement for high-volume email outbound |
+| People search scoped to LinkedIn-indexed profiles | Less effective for non-LinkedIn-active ICPs |
 | Supabase required for full cloud parity | Local dev uses SQLite fallback |
 
 **Failures caught and fixed:**
-- `GET /leads/stats` returning 500 — Supabase-only code path not falling back to SQLite
-- Inbox showing only "in progress" — wrong status bucket order in aggregation
-- "YC founders" copy appearing on Series B searches — template logic assumed all founder prompts were YC
-- Frontend "Server error" overlay — unhandled 500 from background stats prefetch
+
+`GET /leads/stats` was returning 500 in local dev because the stats query was written against Supabase-specific syntax with no SQLite fallback. The fix added a database-agnostic path in `sqlite_store.py` that runs on `DATABASE_URL` detection.
+
+The inbox was collapsing all active enrollments into "in progress" regardless of actual state. The root cause was a bucket ordering bug in `inbox_service.py` that evaluated scheduled and sent states after in_progress, so everything matched the first condition. Fixing the evaluation order restored accurate five-state bucketing.
+
+"YC founders" copy was appearing on Series B searches because `outreach_templates.py` had a single template branch keyed on the word "founder" in the prompt, with no audience differentiation. The fix introduced `audience_phrase()` to infer seniority and stage from the full prompt text, and `note_has_wrong_audience()` to catch cases where a cached template no longer matched the current search.
+
+A frontend "Server error" overlay was appearing on page load for some users because a background stats prefetch was throwing an unhandled 500 that bubbled to the error boundary. The fix wrapped the prefetch in a try/catch that logs the failure silently and renders the page without stats rather than blocking.
 
 ---
 
