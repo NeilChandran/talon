@@ -38,7 +38,7 @@ The motivation is direct: as a founder building an early-stage startup, we neede
 - Launch all → POST to Origami sequencer, auto-confirms needs_input states
 - Inbox aggregating all enrollment states across campaigns with Origami sync
 - Global Messages tab to edit LinkedIn templates with `{{first_name}}` / `{{company}}` variables, persisted across sessions
-- Audience-aware template logic — Series B founders get different copy than YC founders, inferred from the search prompt
+- Audience-aware template logic — For ex: Series B founders get different messsages than YC founders, inferred from the search prompt
 
 **Iteration evidence (git history):**
 
