@@ -13,7 +13,7 @@ Existing tools solve one piece. Apollo and ZoomInfo give you lists but no outrea
 
 Talon does. You describe your ideal customer in plain English, get a live-sourced table of matched people back in seconds, review personalized connection notes generated for each one, and launch the full sequence without leaving the app.
 
-The motivation is direct: Hedwig's ICP is founders and operators at early-stage startups. We needed a repeatable way to find them and reach them on LinkedIn. We built Talon to solve our own outbound problem and turned it into a standalone tool.
+The motivation is direct: B2B companies ICP is founders and operators at startups/enterprises. We needed a repeatable way to find them and reach them on LinkedIn. We built Talon to solve our own outbound problem and turned it into a standalone tool.
 
 ---
 
